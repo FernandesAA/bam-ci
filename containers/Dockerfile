@@ -6,7 +6,7 @@
 FROM python:3.12-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libeccodes0 \
+ && apt-get install -y --no-install-recommends libeccodes0 libeccodes-data \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/bam-ci

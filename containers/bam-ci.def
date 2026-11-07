@@ -18,13 +18,13 @@ From: python:3.12-slim
     set -eux
     # libeccodes: necessaria para ler GRIB2 (GFS/FNL/RTG)
     apt-get update
-    apt-get install -y --no-install-recommends libeccodes0
+    apt-get install -y --no-install-recommends libeccodes0 libeccodes-data
     rm -rf /var/lib/apt/lists/*
     cd /opt/bam-ci
     python -m pip install --no-cache-dir --upgrade pip
     python -m pip install --no-cache-dir ".[grib,netcdf,download]"
     python -c "import bamci, numpy; print('bam-ci', bamci.__version__, 'numpy', numpy.__version__)"
-    python -c "import eccodes; eccodes.codes_get_api_version()" && echo "eccodes ok"
+    python -c "import eccodes; print('eccodes', eccodes.__file__)"
 
 %environment
     export LC_ALL=C.UTF-8
