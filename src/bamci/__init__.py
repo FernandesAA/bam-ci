@@ -13,7 +13,12 @@ from .spectral import analysis as spectral_analysis
 from .spectral import synthesis as spectral_synthesis
 from .vertical import interp_logp, new_ps, new_sigma, vert_sigma_inter
 
-__version__ = "0.1.0"
+try:  # versao do pacote instalado (mantida em sincronia com o pyproject.toml)
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("bam-ci")
+except Exception:  # pragma: no cover - execucao direta do fonte
+    __version__ = "1.0.0"
 
 __all__ = [
     "Ctl", "CtlError", "parse_ctl", "read_ctl", "GradsFile",
