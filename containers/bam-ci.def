@@ -1,0 +1,59 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+# bam-ci autocontido: interpretador, dependencias e o pacote dentro da imagem.
+# Uso:
+#   apptainer build bam-ci.sif containers/bam-ci.def
+#   apptainer run bam-ci.sif --help
+#   apptainer exec bam-ci.sif bamci check arquivo.unf --mend 126
+
+%files
+    pyproject.toml /opt/bam-ci/pyproject.toml
+    README.md /opt/bam-ci/README.md
+    LICENSE /opt/bam-ci/LICENSE
+    src /opt/bam-ci/src
+    tests /opt/bam-ci/tests
+
+%post
+    set -eux
+    # libeccodes: necessaria para ler GRIB2 (GFS/FNL/RTG)
+    apt-get update
+    apt-get install -y --no-install-recommends libeccodes0
+    rm -rf /var/lib/apt/lists/*
+    cd /opt/bam-ci
+    python -m pip install --no-cache-dir --upgrade pip
+    python -m pip install --no-cache-dir ".[grib,netcdf,download]"
+    python -c "import bamci, numpy; print('bam-ci', bamci.__version__, 'numpy', numpy.__version__)"
+    python -c "import eccodes; eccodes.codes_get_api_version()" && echo "eccodes ok"
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PYTHONUNBUFFERED=1
+    export PYTHONDONTWRITEBYTECODE=1
+
+%runscript
+    exec bamci "$@"
+
+%labels
+    org.opencontainers.image.title bam-ci
+    org.opencontainers.image.description Pre-processamento do BAM 1.2 subsazonal (condicao inicial espectral e SST semanal)
+    org.opencontainers.image.licenses MIT
+    org.opencontainers.image.version 1.0.0
+
+%help
+    bam-ci 1.0.0 — pre-processamento do BAM 1.2 subsazonal.
+
+    Comandos:
+      bamci download  --source era5|fnl|gfs --date AAAAMMDDHH --out DIR
+      bamci run       --case ERA5 --date AAAAMMDDHH --levels DeltaSigma.L042 --out DIR
+      bamci sst       --source rtg|oisst --input ARQUIVO --out SSTWeeklyAAAAMMDD.G00192
+      bamci check     ARQUIVO --mend 126
+      bamci compare   A B --mend 126
+
+    Exemplos:
+      apptainer run bam-ci.sif --help
+      apptainer exec --bind $PWD:/dados bam-ci.sif bamci check /dados/arquivo.unf --mend 126
+
+    Para ERA5 e preciso montar o ~/.cdsapirc dentro do container:
+      apptainer exec --bind $HOME/.cdsapirc:/root/.cdsapirc bam-ci.sif bamci download --source era5 ...

@@ -16,3 +16,6 @@ reference/
 *.log
 *.pbs
 .cdsapirc
+*.sif
+.apptainer-cache/
+.apptainer-tmp/
