@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+message: "Se usar este pacote em trabalho cientifico, cite como abaixo."
+title: "bam-ci: pre-processamento do BAM 1.2 subsazonal em Python"
+version: 1.0.0
+date-released: 2026-11-07
+license: MIT
+authors:
+  - name: "The bam-ci authors"
