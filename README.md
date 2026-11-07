@@ -125,3 +125,9 @@ operacionais do projeto BAM 1.2 subsazonal.
 ## Licenca
 
 MIT (ver `LICENSE`). Cite com `CITATION.cff`.
+
+## Documentacao
+
+Guia completo em [`docs/`](docs/index.md): instalacao, uso, formatos de arquivo,
+validacao contra a producao, referencia da API e problemas conhecidos.
+Para publicar como site: `pip install mkdocs && mkdocs gh-deploy`.

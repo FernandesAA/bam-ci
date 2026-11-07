@@ -1,0 +1,19 @@
+site_name: bam-ci
+site_description: Pre-processamento do BAM 1.2 subsazonal em Python
+docs_dir: docs
+theme:
+  name: readthedocs
+  language: pt
+nav:
+  - Inicio: index.md
+  - Instalacao: instalacao.md
+  - Uso: uso.md
+  - Formatos: formatos.md
+  - Validacao: validacao.md
+  - API: api.md
+  - Problemas conhecidos: troubleshooting.md
+  - Especificacoes do legado:
+      - Visao geral: SPEC.md
+      - Entradas (GRIB): spec_inputs.md
+      - Saida (CI): spec_output.md
+      - Nucleo numerico: spec_fortran.md
