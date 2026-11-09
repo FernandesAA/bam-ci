@@ -22,6 +22,7 @@ GRIB (ERA5 / FNL / GFS)
 - [Uso](uso.md) — CLI e submissao PBS
 - [Formatos de arquivo](formatos.md) — IC e SST
 - [Validacao](validacao.md) — numeros medidos contra a producao
+- [Literatura: perturbacao de condicoes iniciais](literatura-perturbacoes.md)
 - [API](api.md) — modulos e funcoes principais
 - [Problemas conhecidos](troubleshooting.md)
 - [Especificacoes do legado](SPEC.md) — extraidas do codigo Fortran/GrADS
