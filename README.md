@@ -9,12 +9,16 @@ testavel e sem dependencia de executaveis externos.
 
 ```
 GRIB (ERA5 / FNL / GFS)
-   -> grade gaussiana TQ126 (384 x 192)
-   -> interpolacao vertical sigma L42 (NewPs + NewSigma)
+   -> grade gaussiana da truncacao pedida   (T126 -> 384 x 192, T213 -> 640 x 320, ...)
+   -> interpolacao vertical sigma L<kmax>   (NewPs + NewSigma)
    -> derivadas espectrais (divergencia / vorticidade)
    -> harmonicos esfericos (FFT + Legendre)
-   -> GANL<CASE><AAAAMMDDHH>S.unf.TQ0126L042   (11.055.828 B)
+   -> GANL<CASE><AAAAMMDDHH>S.unf.T<Q|L><mend>L<kmax>
 ```
+
+A resolucao e argumento: qualquer truncacao (126, 213, 254, 666, ...) e qualquer
+numero de camadas (L42, L64, ...). TQ126L042 continua sendo o default e reproduz
+o arquivo de producao de 11.055.828 B.
 
 ## Instalacao
 
@@ -32,18 +36,23 @@ Dependencia obrigatoria: `numpy`. Extras: `eccodes` (leitura GRIB),
 # 1. baixar a analise (ERA5 e o default; grade nativa 0.25, sem regrid)
 bamci download --source era5 --date 2026102300 --out DataAnl
 
-# 2. gerar a condicao inicial
-bamci run --case ERA5 --date 2026102300 \
-          --levels /caminho/DeltaSigma.L042 \
-          --out model/datain
+# 2. gerar a condicao inicial (TQ126L042 e o default)
+bamci run --case ERA5 --date 2026102300 -r TQ0126L042 \
+          --grib DataAnl/era5.grib --delta-sigma /caminho/DeltaSigma.L042 \
+          --out-dir model/datain
+
+# 2b. qualquer truncacao / numero de camadas
+bamci res -r TQ0213L64                    # grade e tamanho antes de rodar
+bamci run --case GFS --date 2026110500 --mend 213 --kmax 64 \
+          --grib gfs.grib --delta-sigma DeltaSigma.L064 --out-dir model/datain
 
 # 3. SST semanal a partir do RTG do NCEP (ou --source oisst)
 bamci sst --source rtg --input "/dados/rtgssthr_grb_0.083.grib2.20261105" \
           --out model/datain/SSTWeekly20261105.G00192
 
 # 4. inspecionar / comparar arquivos
-bamci check   GANLERA52026102300S.unf.TQ0126L042 --mend 126
-bamci compare nossa.unf producao.unf --mend 126
+bamci check   GANLERA52026102300S.unf.TQ0126L042 -r TQ0126L042
+bamci compare nossa.unf producao.unf -r TQ0213L64
 
 # 5. submeter na jaci (PBS, fila aux)
 bamci pbs --case ERA5 --date 2026102300 --walltime 02:00:00 --out icn.pbs --submit

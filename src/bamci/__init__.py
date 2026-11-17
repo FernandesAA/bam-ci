@@ -7,8 +7,10 @@ quando o codigo original estiver disponivel (jaci:/p/projetos/ioper/models/
 BAM-1.2-subsaz).
 """
 
+from .config import Config
 from .ctl import Ctl, CtlError, parse_ctl, read_ctl
 from .grads import GradsFile
+from .resolution import format_resolution, parse_resolution
 from .spectral import analysis as spectral_analysis
 from .spectral import synthesis as spectral_synthesis
 from .vertical import interp_logp, new_ps, new_sigma, vert_sigma_inter
@@ -21,7 +23,8 @@ except Exception:  # pragma: no cover - execucao direta do fonte
     __version__ = "1.0.0"
 
 __all__ = [
-    "Ctl", "CtlError", "parse_ctl", "read_ctl", "GradsFile",
+    "Config", "Ctl", "CtlError", "parse_ctl", "read_ctl", "GradsFile",
+    "parse_resolution", "format_resolution",
     "interp_logp", "new_ps", "new_sigma", "vert_sigma_inter",
     "spectral_analysis", "spectral_synthesis", "__version__",
 ]

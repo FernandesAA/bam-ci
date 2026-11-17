@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from .resolution import format_resolution, resolve
 
 
 #: parametros por tipo de dado de entrada (ImaxInp, JmaxInp, KmaxInp, KmaxInq, DataPrs)
@@ -116,6 +118,41 @@ class Config:
         if self.sigma_suffix:
             name += "_sigma" if self.sigma_level else "_hibrid"
         return Path(self.data_out) / name
+
+    # -- resolucao ---------------------------------------------------------
+    @property
+    def resolution_label(self) -> str:
+        """Rotulo canonico da resolucao, ex.: `TQ0213L064`."""
+        return format_resolution(self.grid, self.mend_out, self.kmax_out)
+
+    def set_resolution(
+        self,
+        resolution: Optional[str] = None,
+        grid: Optional[str] = None,
+        mend: Optional[int] = None,
+        kmax: Optional[int] = None,
+    ) -> "Config":
+        """Aplica `-r TQ0213L64` e/ou `--mend/--kmax/--grid` avulsos.
+
+        Os argumentos explicitos vencem a resolucao textual. Devolve o proprio
+        objeto para encadear. Campos nao informados ficam como estao (o default
+        continua sendo TQ0126L42).
+        """
+        new_grid, new_mend, new_kmax = resolve(
+            resolution=resolution, grid=grid, mend=mend, kmax=kmax, default_grid=self.grid
+        )
+        self.grid = new_grid
+        if new_mend is not None:
+            self.mend_out = int(new_mend)
+        if new_kmax is not None:
+            self.kmax_out = int(new_kmax)
+        return self
+
+    @classmethod
+    def from_resolution(cls, resolution: str, **kwargs) -> "Config":
+        """Cria um Config a partir de `"TQ0213L64"` (demais campos por kwarg)."""
+        cfg = cls(**kwargs)
+        return cfg.set_resolution(resolution)
 
     def check(self) -> List[str]:
         problems: List[str] = []

@@ -1,10 +1,26 @@
 # API
 
+## `bamci.resolution`
+
+- `parse_resolution("TQ0213L64")` -> `("Q", 213, 64)`; aceita `T213L42`,
+  `Q213`, `213L64`, `TQ0213` (sem camadas), `TL95L42`.
+- `format_resolution("Q", 213, 64)` -> `"TQ0213L064"`.
+- `resolve(resolution=..., grid=..., mend=..., kmax=...)` — combina `-r` com
+  flags avulsas (o explicito vence o texto).
+- `describe(grid, mend, kmax)` -> grade, `ncoeff` e tamanho do arquivo.
+- Reexporta `grid_shape(mend)` e `fft_friendly_size(n)` de `bamci.levels`.
+
 ## `bamci.config`
 
 - `Config` — parametros da execucao (caso, data, truncacao, niveis, caminhos).
   Presets em `CASE_PRESETS` (E40, E4W, EIT, EIH, FNL, GFS, ERA5).
   `Config.output_path()` devolve o nome do arquivo de IC.
+- `Config.set_resolution("TQ0213L64")` / `Config.from_resolution(...)` —
+  definem `mend_out`/`kmax_out`/`grid`; `Config.resolution_label` da o rotulo.
+- `bamci.spectral.legendre_columns(mend, mu)` — colunas de Legendre normalizadas,
+  uma ordem zonal por vez (sem o cubo `(mend+1)^2 x nlat`).
+- `bamci.derivatives.dpln_columns(mend, mu)` — d(pln)/d(mu) pela recorrencia
+  normalizada (estavel em qualquer truncacao).
 
 ## `bamci.gribio`
 
@@ -16,6 +32,8 @@
 ## `bamci.horizontal`
 
 - `interpolate_bilinear(campo, lat_src, lon_src, lat_dst, lon_dst)`.
+- `bamci.sst.model_grid(mend)` -> `(nlat, nlon)`; `bamci.sst.default_mask(mend)` ->
+  caminho da mascara de terra da grade (T126 -> `G00192`, T213 -> `G00320`).
 - `regular_grid(nlat, nlon)`.
 
 ## `bamci.vertical`

@@ -9,12 +9,15 @@ O pacote cobre as duas etapas que hoje rodam em GrADS + Fortran:
 
 ```
 GRIB (ERA5 / FNL / GFS)
-   -> grade gaussiana TQ126 (384 x 192)
-   -> NewPs + interpolacao vertical sigma L42
+   -> grade gaussiana da truncacao pedida (T126 -> 384x192, T213 -> 640x320, ...)
+   -> NewPs + interpolacao vertical sigma L<kmax>
    -> derivadas espectrais (divergencia / vorticidade)
    -> FFT + Legendre (filtro de Hoskins)
-   -> GANL<CASE><AAAAMMDDHH>S.unf.TQ0126L042   (11.055.828 B)
+   -> GANL<CASE><AAAAMMDDHH>S.unf.T<Q|L><mend>L<kmax>
 ```
+
+A resolucao e um argumento (`-r TQ0213L64`, `--mend 254 --kmax 42`); TQ126L042
+continua sendo o default.
 
 ## Indice
 
@@ -32,8 +35,9 @@ GRIB (ERA5 / FNL / GFS)
 | etapa | situacao |
 |---|---|
 | condicao inicial (TQ126L42, sigma) | validada contra a producao (topografia corr 0.994, ps rms 9,4 hPa, T rms ~1 K) |
+| outras resolucoes (T213L64, T254L42, TL95L42) | pipeline ponta a ponta com tamanho de arquivo exato |
 | SST semanal (RTG/OISST) | validada (mascara identica, SST rms 0.58 K, corr 0.9990) |
-| testes | 89, sem dependencia de rede |
+| testes | 143, sem dependencia de rede |
 
 ## Licenca
 

@@ -116,6 +116,13 @@ def run(cfg: Config, analysis: Optional[Analysis] = None, grib_path: Optional[st
     if delta_sigma_path is None:
         raise ValueError("informe o arquivo DeltaSigma.Lxxx")
     delta = read_delta_sigma(delta_sigma_path)
+    if delta.size != cfg.kmax_out:
+        raise ValueError(
+            "DeltaSigma %s tem %d camadas mas a resolucao pede %d "
+            "(use -r T%s%04dL%03d ou --kmax %d)"
+            % (delta_sigma_path, delta.size, cfg.kmax_out,
+               cfg.grid, cfg.mend_out, delta.size, delta.size)
+        )
     sig_inter, sig_layer = new_sigma(delta)
     p_out = sig_layer[:, None, None] * ps_out[None, :, :]
 

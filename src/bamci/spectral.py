@@ -15,8 +15,6 @@ Porte de ICnAGCM/Decomposition.f90 + Legendre.f90 + Fourier.f90:
 
 from __future__ import annotations
 
-from math import lgamma
-
 import numpy as np
 
 from .levels import gaussian_latitudes
@@ -30,29 +28,79 @@ def gauss_weights(jmax: int) -> np.ndarray:
     return np.asarray(w[::-1], dtype=np.float64)
 
 
-def legendre_norm(mend: int, mu) -> np.ndarray:
-    """pln[m, n, j] normalizado (n>=m) para as latitudes mu (sin(lat))."""
+def _norm_scale(m: int) -> float:
+    """Fator de normalizacao por ordem zonal (1/sqrt2 em m=0, 1/2 caso geral)."""
+    return (1.0 / np.sqrt(2.0)) if m == 0 else 0.5
+
+
+def legendre_columns(mend: int, mu):
+    """Gera as colunas `pln[m, m:]` de uma ordem zonal por vez.
+
+    Mesma recorrencia e normalizacao de :func:`legendre_norm`, mas sem
+    materializar o cubo `(m+1, n+1, nlat)`: em T666 isso seriam ~3,6 GB
+    (667 x 667 x 500 x 8 B) por campo. Aqui o pico e uma coluna
+    `(mend+1-m, nlat)`, o que deixa T213/T254/T666 viaveis.
+
+    Yields
+    ------
+    (m, pln_m)
+        `pln_m` tem forma `(mend+1-m, nlat)` e cobre n = m .. mend.
+    """
     mu = np.asarray(mu, dtype=np.float64).ravel()
     ny = mu.size
-    m_max = int(mend)
-    p = np.zeros((m_max + 1, m_max + 1, ny))
-    p[0, 0] = 1.0
+    n_max = int(mend)
     somx2 = np.sqrt(np.maximum(1.0 - mu ** 2, 0.0))
-    for m in range(1, m_max + 1):
-        p[m, m] = (2 * m - 1) * somx2 * p[m - 1, m - 1]
-    for m in range(m_max + 1):
-        if m < m_max:
-            p[m + 1, m] = mu * (2 * m + 1) * p[m, m]
-        for n in range(m + 2, m_max + 1):
-            p[n, m] = ((2 * n - 1) * mu * p[n - 1, m] - (n + m - 1) * p[n - 2, m]) / (n - m)
 
-    pln = np.zeros_like(p)
-    for m in range(m_max + 1):
-        for n in range(m, m_max + 1):
-            logn = 0.5 * (np.log(2.0 if m > 0 else 1.0) + np.log(2 * n + 1)
-                          + lgamma(n - m + 1) - lgamma(n + m + 1))
-            scale = (1.0 / np.sqrt(2.0)) if m == 0 else 0.5
-            pln[m, n] = np.exp(logn) * scale * p[n, m]
+    # A recorrencia crua de P_n^m cresce como O(10^n): em T126 ja anda perto do
+    # limite do double e em T213 estoura (NaN). Mantemos a mesma recorrencia,
+    # mas reescalonamos a coluna quando ela passa de RESCALE_LIMIT e acumulamos
+    # o log do fator em `log_scale`; a normalizacao final (que e minúscula,
+    # exp(logn) ~ 1e-300 para n grande) e somada em log, sem overflow.
+    RESCALE_LIMIT = 1e150
+    pmm = np.ones(ny)                      # P(0,0), ja dividido por exp(log_diag)
+    log_diag = 0.0
+    for m in range(n_max + 1):
+        if m > 0:
+            pmm = (2 * m - 1) * somx2 * pmm    # P(m,m) pela diagonal
+            peak = float(np.max(np.abs(pmm)))
+            if peak > RESCALE_LIMIT:
+                pmm /= peak
+                log_diag += np.log(peak)
+        ns = np.arange(m, n_max + 1)
+        col = np.empty((ns.size, ny))
+        col[0] = pmm
+        log_scale = log_diag
+        if ns.size > 1:
+            col[1] = mu * (2 * m + 1) * pmm
+            for n in range(m + 2, n_max + 1):
+                k = n - m
+                col[k] = ((2 * n - 1) * mu * col[k - 1] - (n + m - 1) * col[k - 2]) / (n - m)
+                peak = float(np.max(np.abs(col[k])))
+                if peak > RESCALE_LIMIT:
+                    col[:k + 1] /= peak
+                    log_scale += np.log(peak)
+        logn = 0.5 * (np.log(2.0 if m > 0 else 1.0) + np.log(2 * ns + 1)
+                      + _lgamma_vec(ns - m + 1) - _lgamma_vec(ns + m + 1))
+        yield m, (np.exp(logn + log_scale)[:, None] * _norm_scale(m)) * col
+
+
+def _lgamma_vec(values: np.ndarray) -> np.ndarray:
+    """lgamma vetorizado (os argumentos sao inteiros pequenos)."""
+    from math import lgamma as _lg
+    return np.fromiter((_lg(int(v)) for v in values), dtype=np.float64, count=len(values))
+
+
+def legendre_norm(mend: int, mu) -> np.ndarray:
+    """pln[m, n, j] normalizado (n>=m) para as latitudes mu (sin(lat)).
+
+    Materializa o cubo completo (memoria O(mend^2 * nlat)): em T666 sao
+    ~3,6 GB. Prefira :func:`legendre_columns` em codigo novo; esta funcao
+    existe para diagnostico e testes e usa o mesmo caminho numerico.
+    """
+    mu = np.asarray(mu, dtype=np.float64).ravel()
+    pln = np.zeros((int(mend) + 1, int(mend) + 1, mu.size))
+    for m, col in legendre_columns(mend, mu):
+        pln[m, m:, :] = col
     return pln
 
 
@@ -74,11 +122,10 @@ def analysis(field, mend: int) -> np.ndarray:
     lat = gaussian_latitudes(nlat)
     mu = np.sin(np.radians(lat))[:half]
     w = gauss_weights(nlat)[:half]
-    pln = legendre_norm(mend, mu)
     A = _fourier(f, mend)
 
     coef = np.zeros((mend + 1, mend + 1), dtype=np.complex128)
-    for m in range(mend + 1):
+    for m, pln_m in legendre_columns(mend, mu):
         cn = A[:half, m]
         cs = A[::-1][:half, m]
         fp = cn + cs
@@ -86,7 +133,7 @@ def analysis(field, mend: int) -> np.ndarray:
         ns = np.arange(m, mend + 1)
         parity = (ns - m) % 2 == 0
         s = np.where(parity[:, None], fp[None, :], fm[None, :])      # (n, lat)
-        coef[m, m:] = (pln[m, m:, :] * (w * s)).sum(axis=1)
+        coef[m, m:] = (pln_m * (w * s)).sum(axis=1)
     return coef
 
 
@@ -94,15 +141,14 @@ def synthesis(coef, mend: int, nlat: int, nlon: int) -> np.ndarray:
     """Reconstroi a grade (nlat, nlon) a partir dos coeficientes (m+1, n+1)."""
     lat = gaussian_latitudes(nlat)
     mu = np.sin(np.radians(lat))
-    pln = legendre_norm(mend, mu)
     lam = 2.0 * np.pi * np.arange(nlon) / nlon
     out = np.zeros((nlat, nlon))
-    for m in range(mend + 1):
+    for m, pln_m in legendre_columns(mend, mu):
         trig = np.cos(m * lam) if m else np.ones(nlon)
         sint = np.sin(m * lam) if m else np.zeros(nlon)
         factor = 1.0 if m == 0 else 2.0
         c = coef[m, m:]
-        y = pln[m, m:, :].T @ c          # (nlat,) complexo
+        y = pln_m.T @ c                  # (nlat,) complexo
         out += factor * (np.real(y)[:, None] * trig[None, :] + np.imag(y)[:, None] * sint[None, :])
     return out
 

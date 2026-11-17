@@ -85,9 +85,14 @@ def write_sstweekly(path: str | Path, ice: np.ndarray, sst: np.ndarray) -> Path:
     return p
 
 
-def build_weekly(oisst_path, end_date, out_path, nlat: int = 192, nlon: int = 384,
-                 days: int = 7) -> Path:
-    """Pipeline completo: OISST -> grade do modelo -> arquivo do modelo."""
+def build_weekly(oisst_path, end_date, out_path, nlat: int | None = None,
+                 nlon: int | None = None, days: int = 7, mend: int = 126) -> Path:
+    """Pipeline completo: OISST -> grade do modelo -> arquivo do modelo.
+
+    A grade vem de `mend` (T126 -> 384x192) quando `nlat`/`nlon` nao sao dados.
+    """
+    if nlat is None or nlon is None:
+        nlat, nlon = model_grid(mend)
     sst, ice, lat, lon = read_oisst(oisst_path, end_date, days=days)
     sst_g = to_model_grid(sst, lat, lon, nlat=nlat, nlon=nlon, fill=UNDEF)
     ice_g = to_model_grid(ice, lat, lon, nlat=nlat, nlon=nlon, fill=0.0)
@@ -132,11 +137,46 @@ def ice_from_sst(sst: np.ndarray, freeze: float = 271.35, width: float = 2.5) ->
     return np.clip(1.0 - x, 0.0, 1.0)
 
 
-#: mascara de terra do modelo BAM (arquivo texto: 192 linhas de 384 caracteres, 1=terra)
-DEFAULT_MASK = "/p/projetos/ioper/fix/BAM_hibrido/pre/datain/ModelLandSeaMask.G00192"
+#: diretorio das mascaras de terra do modelo BAM (arquivo texto, 1=terra)
+MASK_DIR = "/p/projetos/ioper/fix/BAM_hibrido/pre/datain"
+
+#: mascara padrao historica (TQ126 -> grade 384x192)
+DEFAULT_MASK = MASK_DIR + "/ModelLandSeaMask.G00192"
 
 
-def load_land_mask(path: str | Path = DEFAULT_MASK, nlat: int = 192, nlon: int = 384) -> np.ndarray:
+def model_grid(mend: int = 126) -> tuple:
+    """(nlat, nlon) da grade gaussiana do modelo para a truncacao `mend`."""
+    nlon, nlat = grid_shape(mend)
+    return int(nlat), int(nlon)
+
+
+def default_mask(mend: int = 126) -> str:
+    """Caminho da mascara de terra para uma truncacao (G00<latitudes>).
+
+    O numero do arquivo e a quantidade de latitudes da grade gaussiana:
+    T126 -> 192 (G00192), T213 -> 320 (G00320), T254 -> 384, T666 -> 1000.
+    """
+    nlat, _ = model_grid(mend)
+    return "%s/ModelLandSeaMask.G%05d" % (MASK_DIR, nlat)
+
+
+def load_land_mask(path: str | Path | None = None, nlat: int = 192,
+                   nlon: int = 384) -> np.ndarray:
+    """Mascara de terra do modelo (1 = terra, 0 = oceano).
+
+    `path=None` usa :func:`default_mask` para a grade pedida.
+    """
+    if path is None:
+        path = default_mask_for_shape(nlat)
+    return _load_land_mask_file(Path(path), nlat, nlon)
+
+
+def default_mask_for_shape(nlat: int) -> str:
+    """Mascara cujo numero casa com a quantidade de latitudes."""
+    return "%s/ModelLandSeaMask.G%05d" % (MASK_DIR, int(nlat))
+
+
+def _load_land_mask_file(path: Path, nlat: int, nlon: int) -> np.ndarray:
     """Mascara de terra do modelo (1 = terra, 0 = oceano).
 
     O arquivo e texto: uma linha por latitude, um caractere por longitude,
@@ -153,13 +193,21 @@ def load_land_mask(path: str | Path = DEFAULT_MASK, nlat: int = 192, nlon: int =
     return mask
 
 
-def build_weekly_rtg(paths, out_path, nlat: int = 192, nlon: int = 384,
-                     topo_path: str | None = DEFAULT_MASK, days: int = 1) -> Path:
+def build_weekly_rtg(paths, out_path, nlat: int | None = None, nlon: int | None = None,
+                     topo_path: str | None = None, days: int = 1,
+                     mend: int = 126) -> Path:
     """Pipeline com RTG: GRIB2 do NCEP -> grade do modelo -> arquivo do modelo.
 
     O RTG e dado PONTUAL (analise diaria): o arquivo do modelo usa o campo do dia
     da data, nao uma media. days > 1 so para diagnostico.
+
+    `mend` define a grade (T126 -> 384x192) e, quando `topo_path` nao e dado, a
+    mascara padrao dessa grade (:func:`default_mask`).
     """
+    if nlat is None or nlon is None:
+        nlat, nlon = model_grid(mend)
+    if topo_path is None:
+        topo_path = default_mask(mend)
     paths = list(paths)
     if days and days > 0:
         paths = paths[-days:]
