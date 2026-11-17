@@ -150,10 +150,11 @@ def _cmd_run(args) -> int:
         p_levels = [float(v) for v in args.p_levels.replace(",", " ").split()]
 
     result = run(cfg, grib_path=args.grib, delta_sigma_path=args.delta_sigma,
-                 p_levels=p_levels)
+                 p_levels=p_levels, source=args.source)
     expected = ic_file_size(cfg.mend_out, cfg.kmax_out)
     size = result.path.stat().st_size
     print("resolucao: %s" % cfg.resolution_label)
+    print("leitor   : %s" % (args.source or cfg.case))
     print("escrito  : %s" % result.path)
     print("tamanho  : %d bytes (esperado %d) %s" % (size, expected, "OK" if size == expected else "DIVERGE"))
     return 0 if size == expected else 1
@@ -226,6 +227,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--mend", type=int, default=None, help="truncacao espectral")
     p_run.add_argument("--kmax", type=int, default=None, help="numero de camadas")
     p_run.add_argument("--grib", required=True, help="arquivo GRIB da analise")
+    p_run.add_argument("--source", default=None, choices=("era5", "nl"),
+                       help="leitor GRIB (padrao: derivado do --case)")
     p_run.add_argument("--delta-sigma", required=True, help="DeltaSigma.Lxxx")
     p_run.add_argument("--p-levels", default=None, help="niveis de pressao (hPa), ex.: 1000,975,...")
     p_run.add_argument("--out-dir", default=None)

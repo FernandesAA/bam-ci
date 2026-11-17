@@ -20,6 +20,9 @@ A resolucao e argumento: qualquer truncacao (126, 213, 254, 666, ...) e qualquer
 numero de camadas (L42, L64, ...). TQ126L042 continua sendo o default e reproduz
 o arquivo de producao de 11.055.828 B.
 
+O leitor GRIB e escolhido pelo `--case` (ERA5/ERA-Interim -> shortNames ECMWF,
+FNL/GFS -> NCEP) e pode ser sobreposto com `--source era5|nl`.
+
 ## Instalacao
 
 ```bash

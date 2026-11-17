@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.1.1
+
+Correcao: **`bamci run` lia todo GRIB com a tabela do NCEP.**
+
+Sintoma: com um arquivo do ERA5, `bamci run --case ERA5 --grib era5.grb ...`
+abortava com `niveis ausentes para rh: [todos os niveis]`.
+
+Causa: `pipeline.run` chamava `build_analysis(fields, "nl", levels)` com a
+fonte fixa em `"nl"`. O ERA5 entrega umidade especifica (shortName `q`), nao
+umidade relativa (shortName `r`), entao o campo nao era encontrado.
+
+- `bamci.gribio.SOURCE_FOR_CASE` / `source_for_case(case)`: ERA5, ERA-40,
+  ERA-Interim -> `"era5"`; FNL e GFS -> `"nl"`.
+- `pipeline.run(..., source=None)` escolhe o leitor pelo `Config.case`.
+- Novo `--source {era5,nl}` em `bamci run` para sobrepor o caso.
+- Niveis ausentes agora sao **interpolados em log(p)** com `RuntimeWarning`
+  (antes abortavam). Arquivos NCEP reais trazem menos niveis de umidade que de
+  temperatura; campo completamente ausente continua sendo erro, com mensagem
+  que indica o `--source` correto.
+- `Config.check()` valida o `--case` e lista os validos (ex.: `ER5` -> erro
+  claro em vez de falha tardia).
+- Testes: 144 -> 150 (leitor por caso, regressao ERA5, interpolacao de niveis
+  e `--source` sobrepondo o caso).
+
 ## 1.1.0
 
 Resolucao configuravel. O pacote deixou de assumir TQ126L042.

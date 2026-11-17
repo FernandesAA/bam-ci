@@ -162,4 +162,8 @@ class Config:
             problems.append("grid deve ser Q ou L")
         if self.kmax_out <= 0 or self.mend_out <= 0:
             problems.append("mend_out/kmax_out devem ser positivos")
+        if self.case not in CASE_PRESETS:
+            problems.append(
+                "caso desconhecido: %r (validos: %s)" % (self.case, sorted(CASE_PRESETS))
+            )
         return problems

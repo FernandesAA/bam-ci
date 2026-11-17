@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from bamci.gribio import (Analysis, RawField, build_analysis,
-                          geopotential_to_height, specific_humidity_from_rh)
+from bamci.gribio import (Analysis, RawField, build_analysis, geopotential_to_height,
+                          source_for_case, specific_humidity_from_rh)
 
 
 def _field(name, level_type, level, values, units=""):
@@ -28,6 +28,49 @@ def _ncep_fields(levels=(1000.0, 850.0, 500.0)):
     fields.append(_field("icec", "surface", 0.0, np.zeros((ny, nx))))
     fields.append(_field("t", "surface", 0.0, np.full((ny, nx), 290.0), "K"))
     return fields
+
+
+def _era5_fields(levels=(1000.0, 850.0, 500.0)):
+    """GRIB do ERA5: shortNames ECMWF (q no lugar de r, z no lugar de hgt)."""
+    ny, nx = 3, 4
+    base = np.linspace(250.0, 300.0, ny * nx).reshape(ny, nx)
+    fields = []
+    for k, p in enumerate(levels):
+        fields.append(_field("t", "isobaricInhPa", p, base + k, "K"))
+        fields.append(_field("u", "isobaricInhPa", p, np.full((ny, nx), 5.0 + k), "m/s"))
+        fields.append(_field("v", "isobaricInhPa", p, np.full((ny, nx), -2.0), "m/s"))
+        fields.append(_field("q", "isobaricInhPa", p, np.full((ny, nx), 0.008), "kg kg**-1"))
+    fields.append(_field("sp", "surface", 0.0, np.full((ny, nx), 101325.0), "Pa"))
+    fields.append(_field("msl", "meanSea", 0.0, np.full((ny, nx), 101500.0), "Pa"))
+    fields.append(_field("z", "surface", 0.0, np.full((ny, nx), 500.0 * 9.80665), "m**2 s**-2"))
+    fields.append(_field("sst", "surface", 0.0, np.full((ny, nx), 290.0), "K"))
+    fields.append(_field("ci", "surface", 0.0, np.zeros((ny, nx))))
+    return fields
+
+
+def test_source_for_case_mapping():
+    """O leitor GRIB tem de seguir o --case (ERA5 != NCEP)."""
+    assert source_for_case("ERA5") == "era5"
+    assert source_for_case("EIT") == "era5"
+    assert source_for_case("GFS") == "nl"
+    assert source_for_case("FNL") == "nl"
+    with pytest.raises(ValueError, match="caso desconhecido"):
+        source_for_case("ER5")
+
+
+def test_build_analysis_era5_uses_q():
+    """Regressao: GRIB do ERA5 tem 'q', nao 'r'."""
+    an = build_analysis(_era5_fields(), "era5", [1000.0, 850.0, 500.0])
+    assert an.temperature.shape == (3, 3, 4)
+    assert an.humidity.shape == (3, 3, 4)
+    np.testing.assert_allclose(an.humidity, 0.008)
+    assert an.surface_pressure[0, 0] == pytest.approx(1013.25)
+
+
+def test_era5_file_with_ncep_reader_has_clear_error():
+    """Se o leitor errado for usado, a mensagem tem de apontar --source era5."""
+    with pytest.raises(KeyError, match="--source era5"):
+        build_analysis(_era5_fields(), "nl", [1000.0, 850.0, 500.0])
 
 
 def test_specific_humidity_formula():
@@ -63,10 +106,24 @@ def test_build_analysis_ncep():
     assert an.pressure_hpa.tolist() == [1000.0, 850.0, 500.0]
 
 
-def test_build_analysis_missing_level_raises():
+def test_build_analysis_missing_level_interpolates():
+    """Nivel ausente e interpolado em log(p), com aviso (nao aborta).
+
+    Antes abortava; arquivos reais de FNL/GFS trazem menos niveis de umidade
+    que de temperatura, e um GRIB sem 850 hPa ainda e utilizavel.
+    """
     fields = [f for f in _ncep_fields() if not (f.short_name == "t" and f.level == 850.0
                                                 and f.level_type == "isobaricInhPa")]
-    with pytest.raises(KeyError):
+    with pytest.warns(RuntimeWarning, match="interpolado"):
+        an = build_analysis(fields, "nl", [1000.0, 850.0, 500.0])
+    assert an.temperature.shape == (3, 3, 4)
+    assert np.isfinite(an.temperature).all()
+
+
+def test_build_analysis_missing_field_raises():
+    """Campo ausente por completo continua sendo erro explicito."""
+    fields = [f for f in _ncep_fields() if f.short_name != "r"]
+    with pytest.raises(KeyError, match="umidade relativa"):
         build_analysis(fields, "nl", [1000.0, 850.0, 500.0])
 
 

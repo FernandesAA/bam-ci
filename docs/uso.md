@@ -18,6 +18,23 @@ bamci run --case ERA5 --date 2026102300 -r TQ0126L042 \
 
 Saida: `GANLERA52026102300S.unf.TQ0126L042` (11.055.828 B).
 
+O leitor GRIB e escolhido pelo `--case`:
+
+| caso | leitor | umidade no GRIB |
+|---|---|---|
+| ERA5, E40, E4W, EIT, EIH | `era5` (shortNames ECMWF) | `q` (umidade especifica) |
+| FNL, GFS | `nl` (shortNames NCEP) | `r` (umidade relativa, convertida) |
+
+Para forcar o leitor (arquivo de origem diferente do caso), use `--source`:
+
+```bash
+bamci run --case ERA5 --date 2026102300 --source nl --grib fnl.grb ...
+```
+
+Se um nivel pedido nao existir no arquivo, ele e **interpolado em log(p)** e o
+programa emite um `RuntimeWarning` listando os niveis; campo ausente por
+completo e erro, com a sugestao do `--source` correto.
+
 ## 2b. Outras resolucoes
 
 A truncacao espectral e o numero de camadas sao argumentos. Aceita-se um

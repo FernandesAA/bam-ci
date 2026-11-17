@@ -11,6 +11,7 @@ Fontes suportadas:
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence
@@ -55,6 +56,34 @@ SOURCE_MAP: Dict[str, Dict[str, List[str]]] = {
            "sp": ["sp", "pres"], "msl": ["prmsl"], "sst": ["t"], "ci": ["ci", "icec"]},
 }
 
+#: leitor GRIB correspondente a cada preset de Config.case
+#: (ERA-40/Interim usam os mesmos shortNames do ERA5; FNL e GFS sao NCEP)
+SOURCE_FOR_CASE: Dict[str, str] = {
+    "E40": "era5", "E4W": "era5", "EIT": "era5", "EIH": "era5",
+    "ERA5": "era5", "FNL": "nl", "GFS": "nl",
+}
+
+
+def source_for_case(case: str) -> str:
+    """Leitor GRIB que corresponde ao caso ("era5" ou "nl").
+
+    Sem esse mapeamento o pipeline lia qualquer GRIB com a tabela do NCEP, e um
+    arquivo ERA5 (shortName "q") falhava com "niveis ausentes para rh".
+    """
+    from .config import CASE_PRESETS
+
+    if case not in CASE_PRESETS:
+        raise ValueError(
+            "caso desconhecido: %r (validos: %s)" % (case, sorted(CASE_PRESETS))
+        )
+    try:
+        return SOURCE_FOR_CASE[case]
+    except KeyError:
+        raise ValueError(
+            "sem leitor GRIB definido para o caso %r (conhecidos: %s); "
+            "use --source era5|nl" % (case, sorted(SOURCE_FOR_CASE))
+        ) from None
+
 
 def _matches(fld: RawField, names: Sequence[str], level_type: Optional[str] = None) -> bool:
     if fld.short_name not in names:
@@ -70,6 +99,33 @@ def select_levels(fields: Iterable[RawField], names: Sequence[str], level_type: 
         if _matches(fld, names, level_type):
             out[float(fld.level)] = fld.values
     return out
+
+
+def interp_to_levels(mapping: Dict[float, np.ndarray], levels: Sequence[float]) -> np.ndarray:
+    """Empilha `mapping` nos `levels` pedidos, interpolando em log(p).
+
+    Vetorizado (nada de laco por ponto de grade). Fora do intervalo dos niveis
+    disponiveis, usa o nivel mais proximo (clamp) — o mesmo comportamento do
+    `interp_logp` do modulo vertical.
+    """
+    levels = [float(p) for p in levels]
+    have = np.array(sorted(mapping, reverse=True), dtype=np.float64)   # topo -> superficie
+    stack = np.stack([mapping[p] for p in have], axis=0)
+    shape = stack.shape[1:]
+    flat = stack.reshape(have.size, -1)
+    xp = np.log(have)
+    order = np.argsort(xp)
+    xp = xp[order]
+    flat = flat[order]
+
+    x = np.log(np.asarray(levels, dtype=np.float64))
+    if xp.size == 1:
+        return np.repeat(flat[:1], len(levels), axis=0).reshape((len(levels),) + shape)
+    idx = np.clip(np.searchsorted(xp, x) - 1, 0, xp.size - 2)
+    w = (x - xp[idx]) / (xp[idx + 1] - xp[idx])
+    w = np.clip(w, 0.0, 1.0)[:, None]
+    out = flat[idx] * (1.0 - w) + flat[idx + 1] * w
+    return out.reshape((len(levels),) + shape)
 
 
 def select_surface(fields: Iterable[RawField], names: Sequence[str],
@@ -192,10 +248,31 @@ def build_analysis(fields: Sequence[RawField], source: str, levels_hpa: Sequence
     v_map = by_level("v")
 
     def stack(mapping: Dict[float, np.ndarray], pressure_key: str) -> np.ndarray:
+        """Empilha nos `levels`; interpola em log(p) quando falta nivel.
+
+        Antes exigia todos os niveis e abortava (ERA5 falhava em "rh" por causa
+        do leitor errado, e FNL/GFS tem menos niveis de umidade que de
+        temperatura). Agora interpola e so aborta se o campo nao existir.
+        """
+        if not mapping:
+            raise KeyError(
+                "nenhum campo %r nos niveis de pressao; a fonte selecionada foi %r"
+                " (shortNames esperados: %s)"
+                % (pressure_key, source, spec.get(pressure_key, ["?"]))
+            )
+        exact = all(any(abs(p - q) < 1e-6 for q in mapping) for p in levels)
+        if exact:
+            return np.stack(
+                [mapping[min(mapping, key=lambda q: abs(q - p))] for p in levels], axis=0
+            )
         missing = [p for p in levels if not any(abs(p - q) < 1e-6 for q in mapping)]
-        if missing:
-            raise KeyError("niveis ausentes para %s: %s" % (pressure_key, missing))
-        return np.stack([mapping[min(mapping, key=lambda q: abs(q - p))] for p in levels], axis=0)
+        warnings.warn(
+            "%s: %d nivel(is) interpolado(s) em log(p): %s (disponiveis: %s)"
+            % (pressure_key, len(missing), missing, sorted(mapping, reverse=True)),
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return interp_to_levels(mapping, levels)
 
     temperature = stack(t_map, "t")
     u_wind = stack(u_map, "u")
@@ -204,7 +281,14 @@ def build_analysis(fields: Sequence[RawField], source: str, levels_hpa: Sequence
     if "q" in spec:
         humidity = stack(by_level("q"), "q")
     else:
-        rh = stack(by_level("rh"), "rh")
+        rh_map = by_level("rh")
+        if not rh_map:
+            raise KeyError(
+                "nenhum campo de umidade relativa (shortNames %s) no arquivo; "
+                "a fonte escolhida foi %r. Para GRIB do ERA5 use --source era5 "
+                "(shortName 'q')." % (spec["rh"], source)
+            )
+        rh = stack(rh_map, "rh")
         humidity = np.stack([
             specific_humidity_from_rh(rh[k], temperature[k], levels[k]) for k in range(len(levels))
         ], axis=0)

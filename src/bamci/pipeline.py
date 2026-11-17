@@ -23,7 +23,7 @@ import numpy as np
 
 from .config import Config
 from .derivatives import spectral_div_vort
-from .gribio import Analysis, build_analysis, read_grib
+from .gribio import Analysis, build_analysis, read_grib, source_for_case
 from .horizontal import interpolate_bilinear
 from .ic_format import ICHeader, write_ic
 from .levels import gaussian_latitudes, grid_shape, read_delta_sigma
@@ -67,15 +67,26 @@ class PipelineResult:
 
 
 def run(cfg: Config, analysis: Optional[Analysis] = None, grib_path: Optional[str] = None,
-        delta_sigma_path: Optional[str] = None, p_levels: Optional[Sequence[float]] = None) -> PipelineResult:
-    """Executa o pipeline e grava o arquivo de IC."""
+        delta_sigma_path: Optional[str] = None, p_levels: Optional[Sequence[float]] = None,
+        source: Optional[str] = None) -> PipelineResult:
+    """Executa o pipeline e grava o arquivo de IC.
+
+    `source` e o leitor GRIB ("era5" ou "nl"); quando omitido vem do caso
+    (`Config.case`), via :func:`bamci.gribio.source_for_case`.
+    """
     if analysis is None:
         if grib_path is None:
             raise ValueError("informe analysis ou grib_path")
+        reader = source or source_for_case(cfg.case)
         fields = read_grib(grib_path)
         levels = list(p_levels) if p_levels is not None else sorted(
             {f.level for f in fields if f.level_type == "isobaricInhPa"}, reverse=True)
-        analysis = build_analysis(fields, "nl", levels)
+        if not levels:
+            raise ValueError(
+                "o GRIB nao tem campos em niveis de pressao (isobaricInhPa); "
+                "confira se o download incluiu os campos 3D"
+            )
+        analysis = build_analysis(fields, reader, levels)
 
     nlon, nlat = grid_shape(cfg.mend_out)
     lat_out = gaussian_latitudes(nlat)
