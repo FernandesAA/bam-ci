@@ -79,6 +79,58 @@ def open_dataset(path: str | Path):
         raise
 
 
+def _date64(text: str) -> np.datetime64:
+    """`"20261112"` -> `np.datetime64('2026-11-12')`.
+
+    Cuidado: `np.datetime64("20261112", "D")` NAO le como data — o numpy
+    interpreta os 8 digitos como **ano** e devolve `20261112-01-01`, o que faz
+    toda comparacao de janela falhar. Por isso a conversao passa por datetime.
+    """
+    from datetime import datetime
+
+    return np.datetime64(datetime.strptime(str(text), "%Y%m%d").date())
+
+
+def _as_datetimes(values) -> np.ndarray | None:
+    """Converte o eixo de tempo para datetime64[D]; None se nao for possivel."""
+    arr = np.asarray(values)
+    if np.issubdtype(arr.dtype, np.datetime64):
+        return arr.astype("datetime64[D]")
+    try:
+        return np.array([np.datetime64(str(v)[:10]) for v in arr], dtype="datetime64[D]")
+    except (ValueError, TypeError):
+        return None
+
+
+def _select_window(ds, time_name: str, end_date: str, days: int):
+    """Seleciona os tempos da janela SEM depender de indice monotonico.
+
+    `ds.sel(time=slice(...))` exige indice monotonico (e cita o rotulo na
+    mensagem de erro): arquivos de media semanal baixados fora de ordem
+    quebravam com "non-monotonic index". Aqui o recorte e posicional
+    (`isel` sobre uma mascara booleana), que funciona em qualquer ordem.
+    """
+    times = _as_datetimes(ds[time_name].values)
+    if times is None:
+        return ds.isel({time_name: slice(0, 0)})
+    end = _date64(end_date)
+    lo = end - np.timedelta64(max(int(days) - 1, 0), "D")
+    mask = (times >= lo) & (times <= end)
+    return ds.isel({time_name: np.flatnonzero(mask)})
+
+
+def _nearest_time(values, end_date: str):
+    """(indice, rotulo) do tempo mais proximo da data pedida."""
+    times = _as_datetimes(values)
+    if times is None:
+        raise ValueError(
+            "nao foi possivel interpretar o eixo de tempo: %r" % (np.asarray(values)[:3],)
+        )
+    end = _date64(end_date)
+    idx = int(np.argmin(np.abs(times - end)))
+    return idx, str(times[idx])
+
+
 def read_oisst(path: str | Path, end_date: str, days: int = 7) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Media semanal da OISST v2.1 (dias terminando em end_date).
 
@@ -89,24 +141,21 @@ def read_oisst(path: str | Path, end_date: str, days: int = 7) -> Tuple[np.ndarr
 
     ds = open_dataset(path)
     time_name = "time"
-    times = np.asarray(ds[time_name].values)
+    if time_name not in ds.dims:
+        raise ValueError("arquivo sem dimensao de tempo: %s" % path)
     end_date = normalize_date(end_date)
-    end = np.datetime64(end_date)
-    sel = ds.sel(time=slice(end - np.timedelta64(days - 1, "D"), end))
+    sel = _select_window(ds, time_name, end_date, days)
     if sel.sizes.get(time_name, 0) == 0:
-        if times.size == 0:
-            raise ValueError("arquivo sem dimensao de tempo: %s" % path)
-        idx = int(np.argmin(np.abs(times - end)))
-        chosen = np.datetime64(times[idx])
+        idx, label = _nearest_time(np.asarray(ds[time_name].values), end_date)
         warnings.warn(
             "sem dado na janela de %d dias ate %s; usando o tempo mais proximo "
             "do arquivo (%s), que pode ser uma media semanal ja calculada"
-            % (days, end_date, str(chosen)[:10]),
+            % (days, end_date, label),
             RuntimeWarning,
             stacklevel=2,
         )
         sel = ds.isel({time_name: [idx]})
-    sst = sel["sst"].mean(dim=time_name) if "sst" in sel else sel["sst"].mean(dim=time_name)
+    sst = sel["sst"].mean(dim=time_name)
     ice = sel["ice"].mean(dim=time_name) if "ice" in sel else None
     lat = ds["lat"].values
     lon = ds["lon"].values

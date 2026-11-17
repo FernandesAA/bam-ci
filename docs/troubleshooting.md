@@ -10,6 +10,13 @@ pip install netCDF4            # recomendado
 pip install "bam-ci[netcdf]"
 ```
 
+## `sst`: "non-monotonic index ... np.datetime64('20261112-01-01')"
+
+Corrigido na 1.1.3. Era combinacao de recorte por rotulo com indice de tempo fora
+de ordem, mais um erro de leitura de data do numpy (`20261112` lido como ano).
+Atualize o pacote; se persistir, mande a saida de
+`python -c "import xarray as xr; d=xr.open_dataset('SEU.nc'); print(d.time.values[:5])"`.
+
 ## `run`: "niveis ausentes para rh: [...]" (ERA5)
 
 Corrigido na 1.1.1: o leitor GRIB agora segue o `--case`. Se aparecer com uma

@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.1.3
+
+`bamci sst` lia o eixo de tempo do OISST por rotulo e falhava em arquivos reais.
+
+Sintoma: `Cannot get left slice bound for non-monotonic index with a missing
+label np.datetime64('20261112-01-01')`.
+
+Duas causas:
+
+1. **`ds.sel(time=slice(...))` exige indice monotonico** — arquivos de media
+   semanal baixados fora de ordem quebravam. Agora o recorte e **posicional**
+   (`isel` sobre mascara booleana), que funciona em qualquer ordem.
+2. **`np.datetime64("20261112", "D")` nao le como data**: o numpy interpreta os
+   8 digitos como **ano** e devolve `20261112-01-01` (o rotulo estranho da
+   mensagem de erro). A conversao passa por `datetime.strptime`, com o helper
+   `_date64`.
+
+Tambem: `time` ausente vira erro explicito ("arquivo sem dimensao de tempo") em
+vez de `KeyError`; a busca do tempo mais proximo usa o mesmo caminho numerico.
+
+- Testes: 161 -> 166 (`tests/test_oisst_reader.py` grava NetCDF de verdade via
+  motor `scipy` e cobre: janela ordenada, janela fora de ordem, arquivo com um
+  unico tempo, SST em Celsius e ausencia de gelo).
+
 ## 1.1.2
 
 `bamci sst` usavel na pratica: mensagens de erro acionaveis e `--out` como diretorio.
