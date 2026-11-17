@@ -1,5 +1,24 @@
 # Problemas conhecidos
 
+## `sst`: "found the following matches ... xarray's IO backends"
+
+Falta o motor de leitura NetCDF (xarray instalado, `netCDF4`/`h5netcdf` nao):
+
+```bash
+pip install netCDF4            # recomendado
+# ou
+pip install "bam-ci[netcdf]"
+```
+
+## `run`: "niveis ausentes para rh: [...]" (ERA5)
+
+Corrigido na 1.1.1: o leitor GRIB agora segue o `--case`. Se aparecer com uma
+versao antiga, atualize o pacote ou force `--source era5`.
+
+## `run`: "caso desconhecido: 'ER5'"
+
+O `--case` tem de ser um preset: ERA5, E40, E4W, EIT, EIH, FNL ou GFS.
+
 ## A CI nao bate com a producao
 
 1. **Orientacao da grade** — a CI usa longitudes **decrescentes**; a SST, crescentes.

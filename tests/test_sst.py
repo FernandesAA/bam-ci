@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from bamci.sst import UNDEF, to_model_grid, write_sstweekly
+from bamci.sst import (UNDEF, normalize_date, open_dataset, resolve_sst_output,
+                      to_model_grid, write_sstweekly)
 
 
 def test_to_model_grid_shape_and_order():
@@ -39,3 +40,68 @@ def test_ice_from_sst_rule():
     assert abs(ice[1] - 1.0) < 1e-12
     assert 0.0 < ice[2] < 1.0
     assert ice[3] == 0.0
+
+# -- datas, saida e motor NetCDF -----------------------------------------
+def test_normalize_date_accepts_common_forms():
+    for text in ("20261112", "2026111200", "2026-11-12", "2026-11-12T00",
+                 "202611120000", " 20261112 "):
+        assert normalize_date(text) == "20261112"
+
+
+@pytest.mark.parametrize("bad", ["", "2026", "abc", "20261312", "2026111"])
+def test_normalize_date_rejects(bad):
+    with pytest.raises(ValueError):
+        normalize_date(bad)
+
+
+def test_resolve_sst_output_directory(tmp_path):
+    """--out como diretorio monta SSTWeekly<data>.G00<lat> dentro dele."""
+    p = resolve_sst_output(str(tmp_path) + "/", "2026111200", 192)
+    assert p.name == "SSTWeekly20261112.G00192"
+    assert p.parent == tmp_path
+
+    p2 = resolve_sst_output(tmp_path, "2026-11-12", 320)
+    assert p2.name == "SSTWeekly20261112.G00320"
+
+
+def test_resolve_sst_output_file(tmp_path):
+    """--out como caminho de arquivo e respeitado (nao renomeia)."""
+    target = tmp_path / "meu_sst.G00192"
+    assert resolve_sst_output(target, "20261112", 192) == target
+
+
+def test_resolve_sst_output_dir_requires_date(tmp_path):
+    with pytest.raises(ValueError, match="--date"):
+        resolve_sst_output(str(tmp_path) + "/", None, 192)
+
+
+def test_open_dataset_without_xarray_is_actionable(monkeypatch):
+    """Sem xarray a mensagem tem de dizer o que instalar."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "xarray", None)
+    with pytest.raises(RuntimeError, match="netcdf"):
+        open_dataset("qualquer.nc")
+
+
+def test_open_dataset_without_engine_is_actionable(monkeypatch, tmp_path):
+    """O erro real do xarray (backends sem dependencia) vira instrucao clara."""
+    import sys
+    import types
+
+    fake = types.ModuleType("xarray")
+
+    def _open(*_a, **_k):
+        raise ValueError(
+            "found the following matches with the input file in xarray's IO "
+            "backends: ['netcdf4', 'h5netcdf']. But their dependencies may not "
+            "be installed"
+        )
+
+    fake.open_dataset = _open
+    monkeypatch.setitem(sys.modules, "xarray", fake)
+    with pytest.raises(RuntimeError) as exc:
+        open_dataset(tmp_path / "x.nc")
+    msg = str(exc.value)
+    assert "pip install netCDF4" in msg
+    assert "h5netcdf" in msg

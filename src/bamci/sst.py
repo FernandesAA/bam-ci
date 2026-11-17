@@ -13,6 +13,7 @@ da condicao inicial).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Tuple
 
@@ -23,20 +24,88 @@ from .levels import gaussian_latitudes, grid_shape
 UNDEF = -999.0
 
 
+def normalize_date(text: str) -> str:
+    """Aceita YYYYMMDD, YYYYMMDDHH, YYYY-MM-DD e YYYY-MM-DDTHH -> `YYYYMMDD`.
+
+    O `--date` do `bamci run` tem 10 digitos (com hora); o SST e diario, entao a
+    hora e simplesmente descartada em vez de virar erro de formato.
+    """
+    raw = str(text).strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1]
+    if "T" in raw:
+        raw = raw.split("T", 1)[0]
+    digits = raw.replace("-", "").replace("/", "").replace(":", "").replace(" ", "")
+    if not digits.isdigit():
+        raise ValueError("data invalida: %r (use YYYYMMDD ou YYYYMMDDHH)" % (text,))
+    if len(digits) == 10:
+        digits = digits[:8]
+    elif len(digits) == 12:
+        digits = digits[:8]
+    if len(digits) != 8:
+        raise ValueError("data invalida: %r (use YYYYMMDD ou YYYYMMDDHH)" % (text,))
+    from datetime import datetime
+
+    try:
+        datetime.strptime(digits, "%Y%m%d")     # datetime valida mes/dia de verdade
+    except ValueError:
+        raise ValueError("data inexistente: %r" % (text,)) from None
+    return digits
+
+
+def open_dataset(path: str | Path):
+    """Abre o NetCDF com mensagem acionavel quando falta o motor de leitura."""
+    try:
+        import xarray as xr
+    except ImportError as exc:  # pragma: no cover - depende do ambiente
+        raise RuntimeError(
+            "xarray nao instalado; instale os extras de leitura:\n"
+            "  pip install 'bam-ci[netcdf]'"
+        ) from exc
+
+    try:
+        return xr.open_dataset(path)
+    except (ValueError, ImportError) as exc:
+        text = str(exc).lower()
+        if "backend" in text or "dependenc" in text or "engine" in text:
+            raise RuntimeError(
+                "nao ha motor NetCDF instalado para ler\n  %s\n"
+                "Instale um deles e repita:\n"
+                "  pip install netCDF4      (recomendado)\n"
+                "  pip install h5netcdf     (alternativa, precisa de h5py)\n"
+                "ou: pip install 'bam-ci[netcdf]'"
+                % (path,)
+            ) from exc
+        raise
+
+
 def read_oisst(path: str | Path, end_date: str, days: int = 7) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Media semanal da OISST v2.1 (dias terminando em end_date).
 
-    Devolve (sst_k, ice, lat, lon) com NaN onde nao ha dado.
+    Devolve (sst_k, ice, lat, lon) com NaN onde nao ha dado. Se o arquivo ja e
+    uma media semanal (um unico tempo), usa esse tempo em vez de falhar.
     """
-    import xarray as xr
+    import warnings
 
-    ds = xr.open_dataset(path)
+    ds = open_dataset(path)
     time_name = "time"
-    times = ds[time_name].values
+    times = np.asarray(ds[time_name].values)
+    end_date = normalize_date(end_date)
     end = np.datetime64(end_date)
     sel = ds.sel(time=slice(end - np.timedelta64(days - 1, "D"), end))
     if sel.sizes.get(time_name, 0) == 0:
-        raise ValueError("sem dados OISST no periodo terminando em %s" % end_date)
+        if times.size == 0:
+            raise ValueError("arquivo sem dimensao de tempo: %s" % path)
+        idx = int(np.argmin(np.abs(times - end)))
+        chosen = np.datetime64(times[idx])
+        warnings.warn(
+            "sem dado na janela de %d dias ate %s; usando o tempo mais proximo "
+            "do arquivo (%s), que pode ser uma media semanal ja calculada"
+            % (days, end_date, str(chosen)[:10]),
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        sel = ds.isel({time_name: [idx]})
     sst = sel["sst"].mean(dim=time_name) if "sst" in sel else sel["sst"].mean(dim=time_name)
     ice = sel["ice"].mean(dim=time_name) if "ice" in sel else None
     lat = ds["lat"].values
@@ -142,6 +211,30 @@ MASK_DIR = "/p/projetos/ioper/fix/BAM_hibrido/pre/datain"
 
 #: mascara padrao historica (TQ126 -> grade 384x192)
 DEFAULT_MASK = MASK_DIR + "/ModelLandSeaMask.G00192"
+
+
+#: nome do arquivo que o modelo le em model/datain
+SST_TEMPLATE = "SSTWeekly{date}.G{nlat:05d}"
+
+
+def resolve_sst_output(out: str | Path, date: str | None, nlat: int = 192) -> Path:
+    """Aceita `--out` como arquivo ou como diretorio.
+
+    Se `out` for um diretorio existente (ou terminar em `/`), monta
+    `SSTWeekly<AAAAMMDD>.G00<nlat>` dentro dele. Se for um caminho de arquivo,
+    respeita o nome dado.
+    """
+    raw = str(out)
+    path = Path(out)
+    looks_dir = path.is_dir() or raw.endswith("/") or raw.endswith(os.sep)
+    if not looks_dir:
+        return path
+    if date is None:
+        raise ValueError(
+            "--out foi um diretorio e sem --date nao ha como montar o nome "
+            "(SSTWeekly<AAAAMMDD>.G00%d)" % nlat
+        )
+    return path / SST_TEMPLATE.format(date=normalize_date(date), nlat=int(nlat))
 
 
 def model_grid(mend: int = 126) -> tuple:

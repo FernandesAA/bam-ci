@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.2
+
+`bamci sst` usavel na pratica: mensagens de erro acionaveis e `--out` como diretorio.
+
+- **Motor NetCDF ausente**: o erro do xarray ("found the following matches with
+  the input file in xarray's IO backends ... their dependencies may not be
+  installed") agora vira instrucao clara:
+  `pip install netCDF4` (ou `h5netcdf`, ou `pip install 'bam-ci[netcdf]'`).
+- **`--out` aceita diretorio**: terminando em `/` ou sendo diretorio existente,
+  o arquivo e gravado como `SSTWeekly<AAAAMMDD>.G00<nlat>` dentro dele, com
+  `mkdir -p` do caminho. Caminho de arquivo continua sendo respeitado.
+- **`--date` normalizado**: `AAAAMMDD`, `AAAAMMDDHH` (hora descartada),
+  `AAAA-MM-DD`, `AAAA-MM-DDTHH`; data inexistente (`20261312`) e recusada.
+- **Arquivo de media semanal**: se a janela de 7 dias nao tiver dado (arquivo
+  com um unico tempo), usa o tempo mais proximo com `RuntimeWarning` em vez de
+  abortar.
+- `--date` passa a ser obrigatorio apenas para `--source oisst`.
+- `pyproject`: URLs do projeto apontam para o repositorio real (saíram os
+  placeholders `<organizacao>`).
+- Testes: 150 -> 161.
+
 ## 1.1.1
 
 Correcao: **`bamci run` lia todo GRIB com a tabela do NCEP.**

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bam-ci"
-version = "1.1.1"
+version = "1.1.2"
 description = "Pre-processamento do BAM 1.2 subsazonal em Python: analises GRIB (ERA5/FNL/GFS) -> condicao inicial espectral (TQDDD/LDD, qualquer truncacao) e SST semanal (OISST/RTG)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,9 +30,10 @@ download = ["cdsapi>=0.7"]
 dev = ["pytest>=7", "scipy>=1.10"]
 
 [project.urls]
-Homepage = "https://github.com/<organizacao>/bam-ci"
-Source = "https://github.com/<organizacao>/bam-ci"
-Issues = "https://github.com/<organizacao>/bam-ci/issues"
+Homepage = "https://github.com/FernandesAA/bam-ci"
+Documentation = "https://github.com/FernandesAA/bam-ci/tree/main/docs"
+Source = "https://github.com/FernandesAA/bam-ci"
+Issues = "https://github.com/FernandesAA/bam-ci/issues"
 
 [project.scripts]
 bamci = "bamci.cli:main"

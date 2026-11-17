@@ -84,6 +84,26 @@ bamci sst --source oisst --input /dados/sst.day.mean.2026.nc --date 20261105 \
           --out model/datain/SSTWeekly20261105.G00192
 ```
 
+`--out` aceita **arquivo ou diretorio**. Se for diretorio (existente ou com
+`/` no final), o nome e montado a partir da data e da grade:
+
+```bash
+bamci sst --source oisst --input sst.week.mean.nc --date 2026111200 \
+          --out /dados/ioper/tempo/BAM/bam-ci/GANL/
+# grava /dados/.../GANL/SSTWeekly20261112.G00192
+```
+
+`--date` aceita `AAAAMMDD`, `AAAAMMDDHH` (a hora e descartada, o SST e diario),
+`AAAA-MM-DD` e `AAAA-MM-DDTHH`. Se o NetCDF ja for uma **media semanal** (um
+unico tempo) e a data pedida estiver fora da janela, o programa usa o tempo
+mais proximo do arquivo e emite um `RuntimeWarning`.
+
+Ler NetCDF exige um motor instalado (a mensagem de erro diz qual):
+
+```bash
+pip install netCDF4          # ou: pip install "bam-ci[netcdf]"
+```
+
 ## 4. Inspecionar e comparar
 
 ```bash

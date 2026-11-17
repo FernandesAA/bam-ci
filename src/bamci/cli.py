@@ -87,20 +87,32 @@ def _cmd_compare(args) -> int:
 def _cmd_sst(args) -> int:
     import glob as _glob
     from .resolution import resolve
-    from .sst import build_weekly, build_weekly_rtg, default_mask
+    from .sst import (build_weekly, build_weekly_rtg, default_mask, model_grid,
+                      normalize_date, resolve_sst_output)
 
     _, mend, _ = resolve(resolution=args.resolution, grid=args.grid, mend=args.mend)
     mend = 126 if mend is None else mend
     mask = args.topo or default_mask(mend)
+    nlat, _nlon = model_grid(mend)
+
+    date = args.date
+    if date is not None:
+        date = normalize_date(date)
+    out_path = resolve_sst_output(args.out, date, nlat)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if args.source == "rtg":
         paths = sorted(_glob.glob(args.input))
         if not paths:
             print("nenhum arquivo casou com %s" % args.input, file=sys.stderr)
             return 1
-        out = build_weekly_rtg(paths, args.out, topo_path=mask, days=args.days, mend=mend)
+        out = build_weekly_rtg(paths, out_path, topo_path=mask, days=args.days, mend=mend)
     else:
-        out = build_weekly(args.input, args.date, args.out, days=args.days, mend=mend)
+        if date is None:
+            print("bamci: erro: --date e obrigatorio para --source oisst (YYYYMMDD)", file=sys.stderr)
+            return 1
+        out = build_weekly(args.input, date, out_path, days=args.days, mend=mend)
+    print("grade  : %dx%d (T%d)" % (nlat, _nlon, mend))
     print("escrito: %s (%d bytes)" % (out, out.stat().st_size))
     return 0
 
