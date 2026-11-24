@@ -58,6 +58,67 @@ def test_truncated_file_raises(tmp_path):
         GradsFile(ctl).read("t", t=2, z=2)
 
 
+def _write_mixed_case(tmp_path: Path, values: np.ndarray):
+    """Caso sintetico: 3-D (42 niveis) intercalado com duas variaveis 2-D."""
+    levels = " ".join(str(1000 - 20 * i) for i in range(42))
+    text = (
+        "dset ^mixed.dat\n"
+        "undef -9.99e8\n"
+        "options big_endian yrev\n"
+        "xdef 4 linear 0 90\n"
+        "ydef 2 linear -45 90\n"
+        "zdef 42 levels %s\n"
+        "tdef 2 linear 00Z05NOV2026 3hr\n"
+        "vars 4\n"
+        "pslc 0 99 pressao\n"
+        "tvir 42 %s temperatura\n"
+        "prec 0 99 precipitacao\n"
+        "uvel 42 %s vento\n"
+        "endvars\n" % (levels, levels, levels)
+    )
+    ctl_path = tmp_path / "mixed.ctl"
+    ctl_path.write_text(text, encoding="utf-8")
+    (tmp_path / "mixed.dat").write_bytes(np.asarray(values, dtype=">f4").tobytes())
+    return ctl_path
+
+
+def test_variavel_2d_ocupa_um_nivel_e_nao_desalinha(tmp_path):
+    nx, ny, nt, nlev3 = 4, 2, 2, 42
+    cell = nx * ny
+    # por tempo: pslc(1) + tvir(42) + prec(1) + uvel(42) = 86 registros
+    records_per_time = 1 + nlev3 + 1 + nlev3
+    values = np.arange(1, nt * records_per_time * cell + 1, dtype=float)
+    ctl = _write_mixed_case(tmp_path, values)
+
+    g = GradsFile(ctl)
+    assert g._layout == {
+        "pslc": (0, 1),
+        "tvir": (1 * 4 * cell, 42),
+        "prec": ((1 + nlev3) * 4 * cell, 1),
+        "uvel": ((1 + nlev3 + 1) * 4 * cell, 42),
+    }
+    assert g.time_block_bytes == records_per_time * 4 * cell
+
+    def expected(t: int, record: int) -> np.ndarray:
+        start = ((t - 1) * records_per_time + record) * cell
+        return values[start:start + cell].reshape(ny, nx)[::-1, :]
+
+    two_d = g.read("pslc", t=1)
+    assert two_d.shape == (ny, nx)          # (nlat, nlon)
+    np.testing.assert_allclose(two_d, expected(1, 0))
+    assert g.read_volume("pslc", t=1).shape == (1, ny, nx)
+
+    np.testing.assert_allclose(g.read("tvir", t=1, z=1), expected(1, 1))
+    np.testing.assert_allclose(g.read("tvir", t=1, z=42), expected(1, 42))
+    np.testing.assert_allclose(g.read("prec", t=1), expected(1, 43))
+    np.testing.assert_allclose(g.read("uvel", t=1, z=1), expected(1, 44))
+    np.testing.assert_allclose(g.read("uvel", t=1, z=42), expected(1, 85))
+    np.testing.assert_allclose(g.read("uvel", t=2, z=42), expected(2, 85))
+
+    assert g.read_volume("uvel", t=1).shape == (nlev3, ny, nx)
+    assert g.read_time(t=1)["prec"].shape == (1, ny, nx)
+
+
 def test_template_files(tmp_path):
     ctl_text = CTL.replace("dset ^analise.dat", "dset ^analise.%y4%m2%d2.dat").replace(
         "options big_endian yrev", "options big_endian yrev template"

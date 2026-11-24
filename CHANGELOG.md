@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.2.0
+
+Ensaio **MB09** de perturbacao de condicoes iniciais (Mendonca & Bonatti, 2009,
+*Monthly Weather Review* 137, 1438-1459,
+[DOI 10.1175/2008MWR2581.1](https://doi.org/10.1175/2008MWR2581.1)) completo:
+nucleo, driver do modelo BAM, metricas e shell de ponta a ponta.
+
+- **`bamci.mb09_tables`**: 6 regioes do artigo (NH, SH, TR, ETR, NSA, SSA),
+  presets `oper`/`ext1`/`trop`/`ext2`/`etsa` (default `etsa`), amplitudes
+  random/alvo, Tabela 1 de umidade especifica e `region_mask` com bordas
+  documentadas.
+- **`bamci.mb09`**: `State`, `random_deltas` (passo 1), `build_eofs`
+  (diferencas, covariancia, EOF por campo, vento complexo), `apply_modes`
+  (+/- com reescala e conversao para o IC), `write_ensemble` e `run_mb09`.
+  O build usa explicitamente a janela **6, 9, ..., 36 h** (M=11), com
+  `--window`/`--times`/`--analysis-time`; tempos fora da janela sao ignorados
+  com aviso. `save_eofs`/`load_eofs` guardam o resultado em `.npz`.
+- **CLI MB09**: `python -m bamci.mb09 random|build|apply` (manifestos
+  `random.json` e `members.json`; 15 ICs `GANLMB09_000..014`).
+- **`bamci.bamrun`**: driver do BAM 1.2 subsazonal: renderiza o `MODELIN`
+  preservando o template, gera o PBS com `aprun`/OpenMP, linka
+  `GANLNMC...`/`SSTMonthlyDirec...`, prepara um `datain` por membro, submete e
+  espera jobs via `qsub`/`qstat`, coleta saidas e roda o `PostGrib`
+  (`.unf`+`.ctl`), alem de media/espalhamento. CLI:
+  `python -m bamci.bamrun {namelist,pbs,prepare,link,stage,submit,wait,collect,postin,postgrib,ensemble,shift}`.
+- **`bamci.score`**: verificacao de ensemble: PAC, RMSE, spread, BSS/REL/RES
+  e PECA, lendo `.ctl`/`.unf` do `PostGrib`; CLI
+  `python -m bamci.score --ens ... --truth ... --var ...`.
+- **`scripts/mb09.sh`**: pipeline 0-9 (IC de controle, SST, 7 ICs aleatorias,
+  8 previsoes de 36 h, EOFs, 15 previsoes, pos-processamento, metricas),
+  `DRY=1` por default, `--steps` para trechos e lixo em `WORK/trash`
+  (sem `rm -rf`).
+- **docs**: nova especificacao [`docs/mb09.md`](docs/mb09.md) com o algoritmo,
+  as regioes e as decisoes **D1-D11**; secao de ensaio em [`docs/uso.md`](docs/uso.md).
+- **Bug corrigido em `bamci.grads.GradsFile`**: variavel 2-D declarada como
+  `0 99` no `.ctl` ocupava `nz` niveis e desalinhava todas as variaveis
+  seguintes. Agora ocupa 1 nivel; teste sintetico mistura 3-D (42 niveis) com
+  `pslc 0 99`/`prec 0 99` intercalados e confere offsets, shapes e leitura.
+- **Testes**: **298 passed, 1 skipped** (183 -> 298), incluindo suite nova
+  para tabelas, nucleo MB09, driver BAM, score, shell e o caso 2-D do GrADS.
+
 ## 1.1.4
 
 O repositorio passa a acompanhar os arquivos `DeltaSigma.Lxxx` (espessuras

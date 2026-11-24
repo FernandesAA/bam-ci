@@ -2,10 +2,11 @@
 
 Pre-processamento do **BAM 1.2 subsazonal** (modelo global do CPTEC/INPE) em Python.
 
-O pacote cobre as duas etapas que hoje rodam em GrADS + Fortran:
+O pacote cobre as etapas que hoje rodam em GrADS + Fortran:
 
 1. **Condicao inicial espectral** a partir de analises GRIB (ERA5, FNL, GFS);
-2. **SST semanal** no formato que o modelo le (OISST v2.1 ou RTG/NCEP).
+2. **SST semanal** no formato que o modelo le (OISST v2.1 ou RTG/NCEP);
+3. **Ensaio MB09** de perturbacao de condicoes iniciais por EOF (15 membros).
 
 ```
 GRIB (ERA5 / FNL / GFS)
@@ -25,6 +26,7 @@ continua sendo o default.
 - [Uso](uso.md) — CLI e submissao PBS
 - [Formatos de arquivo](formatos.md) — IC, SST e DeltaSigma
 - [Validacao](validacao.md) — numeros medidos contra a producao
+- [MB09: especificacao do ensaio](mb09.md)
 - [Literatura: perturbacao de condicoes iniciais](literatura-perturbacoes.md)
 - [API](api.md) — modulos e funcoes principais
 - [Problemas conhecidos](troubleshooting.md)
@@ -38,7 +40,8 @@ continua sendo o default.
 | outras resolucoes (T213L64, T254L42, TL95L42) | pipeline ponta a ponta com tamanho de arquivo exato |
 | SST semanal (RTG/OISST) | validada (mascara identica, SST rms 0.58 K, corr 0.9990) |
 | DeltaSigma (espessuras sigma) | 7 arquivos em `DeltaSigma/` (L009..L160) acompanham o pacote, soma 1 |
-| testes | 183 (+1 skip), sem dependencia de rede |
+| ensaio MB09 (EOF) | nucleo + driver BAM + metricas + shell 0-9; presets oper/ext1/trop/ext2/etsa, 15 membros |
+| testes | 298 (+1 skip), sem dependencia de rede |
 
 ## Licenca
 

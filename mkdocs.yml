@@ -11,6 +11,7 @@ nav:
   - Formatos: formatos.md
   - Validacao: validacao.md
   - Literatura (perturbacao de ICs): literatura-perturbacoes.md
+  - MB09 (perturbacao): mb09.md
   - API: api.md
   - Problemas conhecidos: troubleshooting.md
   - Especificacoes do legado:

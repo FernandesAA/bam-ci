@@ -153,6 +153,123 @@ bamci pbs --case ERA5 --date 2026102300 --ncpus 1 --walltime 02:00:00 \
 O script gerado faz `cd "$PBS_O_WORKDIR"` e usa por padrao o interpretador
 `.../bam-ci/.venv/bin/python` (os nos de calculo nao tem `python` no PATH).
 
+## 6. Ensaio MB09 (perturbacao de condicoes iniciais)
+
+O ensaio MB09 implementa o metodo de perturbacao por EOF de
+**Mendonca & Bonatti (2009)** (*Monthly Weather Review* 137, 1438-1459,
+[DOI 10.1175/2008MWR2581.1](https://doi.org/10.1175/2008MWR2581.1)). Para cada
+data de analise:
+
+1. gera 7 condicoes iniciais aleatorias em T, U, V, P e Q;
+2. integra as 7 + o controle por 36 h, com saida a cada 3 h;
+3. descarta as 6 h iniciais e calcula EOFs de 6, 9, ..., 36 h (M=11);
+4. aplica 7 pares +/- sobre a analise de controle = **15 membros**.
+
+O preset default e `etsa` (regioes NH, SH, TR, NSA, SSA; campos P, T, Q, U, V).
+A regiao e o perfil de umidade seguem o artigo; as escolhas nao especificadas
+estao documentadas como **D1-D11** em [MB09](mb09.md).
+
+### Execucao de ponta a ponta
+
+O pipeline esta em [scripts/mb09.sh](../scripts/mb09.sh) e e controlado por
+variaveis de ambiente:
+
+```bash
+export SUITE_ROOT=/p/projetos/ioper/fix/sazonal/bam_SeasonalClima-1.2_oper
+export WORK=$PWD/mb09_work
+export DATE=2026110500          # data da analise (YYYYMMDDHH)
+export LEAD_DAYS=30             # previsoes finais
+export PRESET=etsa              # oper | ext1 | trop | ext2 | etsa
+
+# entradas do pre-processamento
+export GRIB=DataAnl/era5.grib
+export SST_INPUT=/dados/sst.day.mean.2026.nc
+export DELTA_SIGMA=DeltaSigma/DeltaSigma.L042
+
+# 1) modo DRY: so imprime os comandos
+DRY=1 scripts/mb09.sh
+DRY=1 scripts/mb09.sh --steps 0,1,2      # apenas um trecho
+
+# 2) execucao real (na jaci)
+DRY=0 scripts/mb09.sh
+```
+
+`SUITE_ROOT` deve conter `model/datain`, `model/dataout`, `pos/exec` e o
+`MODELIN`; os caminhos podem ser sobrepostos com `MODELIN_TEMPLATE` e
+`POSTIN_TEMPLATE`. O script usa o `python` de `PYTHON` (default `python3`) e
+aceita `--date`, `--work`, `--skip-ic` e `--steps`.
+
+### Passos do `scripts/mb09.sh`
+
+| passo | o que faz |
+|---|---|
+| 0 | checagens de ambiente (binario do modelo, `aprun`, `qsub`, `python`) e criacao de `WORK` |
+| 1 | condicao inicial de controle com `bamci run` (ou `--skip-ic` se ja existe) |
+| 2 | SST semanal com `bamci sst` + link para `SSTMonthlyDirec<data>.G00<lat>` |
+| 3 | 7 ICs aleatorias com `bamci.mb09 random` |
+| 4 | submete controle + 7 previsoes de 36 h (`DHFCT=3`) e espera |
+| 5 | pos-processa as 8 saidas com `PostGrib` (`.unf` + `.ctl`) |
+| 6 | constroi os EOFs (`build`, janela 6-36 h) e escreve os 15 ICs (`apply`) |
+| 7 | submete as 15 previsoes ate `LEAD_DAYS` (`DHFCT=24`) e espera |
+| 8 | pos-processa as 15 e calcula media/espalhamento + metricas (`bamci.score`) |
+
+O passo 9 apenas imprime o resumo e os caminhos. Cada membro usa um
+`datain.<membro>` e um `dirfNameOutput` proprio, entao os jobs de 36 h e as 15
+previsoes podem rodar simultaneamente.
+
+### Comandos avulsos
+
+O CLI do MB09 e um modulo (nao ha subcomando `bamci mb09`):
+
+```bash
+# 7 ICs aleatorias
+python -m bamci.mb09 random \
+  --ic model/datain/GANLERA52026110500S.unf.TQ0126L042 \
+  --out-dir work/mb09/random --n 7 --seed 0 --preset etsa \
+  --resolution TQ0126L042
+
+# EOFs a partir dos .ctl do PostGrib (controle + 7 membros)
+python -m bamci.mb09 build --work work/mb09 \
+  --control work/post/ctrl/dataout/TQ0126L042/2026110500/GPOSNMC20261105002026110612C.unf.TQ0126L042.ctl \
+  --members work/post/rand01/.../GPOSNMC...ctl ... \
+  --preset etsa --ps-units hpa --analysis-time 2026110500 \
+  --out work/mb09/eof.npz
+
+# 15 ICs finais (controle + 7 pares +/-)
+python -m bamci.mb09 apply --eof work/mb09/eof.npz \
+  --ic model/datain/GANLERA52026110500S.unf.TQ0126L042 \
+  --out-dir work/mb09/ic --preset etsa --resolution TQ0126L042 \
+  --prefix GANLMB09
+
+# metricas do ensemble (PAC, RMSE, spread, BSS/REL/RES, PECA)
+python -m bamci.score --ens work/post/ens*/.../GPOSNMC...ctl \
+  --truth analise.ctl --var tvir --region nh --leads 1,5,10 \
+  --out work/score.json
+```
+
+O driver do modelo tambem tem CLI propria (`python -m bamci.bamrun`):
+`namelist`, `pbs`, `prepare`, `link`, `stage`, `submit`, `wait`, `collect`,
+`postin`, `postgrib`, `ensemble` e `shift`.
+
+### Pre-requisitos
+
+- **jaci**: PBS Pro com fila `workq`, conta `CPTEC`, `aprun`, `qsub`/`qstat` e
+  o ambiente `load_modulei_intel_2022_oneapi_mpi.bash` (intel/2022, MPI,
+  NETCDF/PNETCDF/PIO);
+- `SUITE_ROOT` da suite operacional do BAM 1.2 subsazonal e permissao de
+  escrita em `SUITE_ROOT/model/datain` e `SUITE_ROOT/model/dataout`;
+- `MODELIN` e `POSTIN-GRIB` da suite (ou templates com os placeholders
+  `{DATAOUT}`, `{POSOUT}`, `{LABELI}`, `{LABELF}`, `{RESOLUTION}`, `{MEMBER}`).
+
+O script **nao usa `rm -rf`**: arquivos descartados vao para `WORK/trash`.
+
+### Aviso de frequencia de saida
+
+As 8 rodadas curtas usam **`DHFCT=3`** para produzir a janela de 6-36 h do
+MB09 (11 tempos). As 15 previsoes finais usam **`DHFCT=24`**, como o
+operacional. O build seleciona explicitamente 6, 9, ..., 36 h; tempos extras
+no `.ctl` sao ignorados com aviso.
+
 ## Uso programatico
 
 ```python

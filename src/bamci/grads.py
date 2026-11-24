@@ -65,7 +65,10 @@ class GradsFile:
         offset = 0
         cell = 4 * ctl.nx * ctl.ny
         for var in ctl.variables:
-            nlev = len(var.levels) if var.levels else ctl.nz
+            # No .ctl do GrADS uma variavel 2-D e declarada com 0 niveis
+            # ("pslc 0 99"), nao com os nz niveis do zdef. Sem esta regra o
+            # offset de todas as variaveis seguintes fica deslocado.
+            nlev = len(var.levels) if var.levels else 1
             layout[var.name] = (offset, nlev)
             offset += nlev * cell
         return layout

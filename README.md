@@ -61,6 +61,23 @@ bamci compare nossa.unf producao.unf -r TQ0213L64
 bamci pbs --case ERA5 --date 2026102300 --walltime 02:00:00 --out icn.pbs --submit
 ```
 
+## Ensaio MB09 (ensemble)
+
+Implementa o metodo de perturbacao por EOF de Mendonca & Bonatti (2009):
+7 condicoes iniciais aleatorias -> 36 h -> EOFs (janela 6-36 h) -> 7 pares
++/- + controle = **15 membros**. O preset default e `etsa`.
+
+```bash
+DRY=1 DATE=2026110500 LEAD_DAYS=30 PRESET=etsa scripts/mb09.sh   # imprime
+DRY=0 DATE=2026110500 LEAD_DAYS=30 PRESET=etsa scripts/mb09.sh   # executa na jaci
+```
+
+O pipeline cobre IC de controle, SST, 7 ICs aleatorias, 8 previsoes de 36 h,
+PostGrib, EOFs, 15 previsoes e metricas (`bamci.score`). O nucleo e o driver
+tambem podem ser chamados avulso (`python -m bamci.mb09 random|build|apply`,
+`python -m bamci.bamrun ...`). Especificacao, regioes e decisoes D1-D11 em
+[docs/mb09.md](docs/mb09.md); guia de execucao em [docs/uso.md](docs/uso.md).
+
 ## Formatos
 
 **Condicao inicial** — Fortran UNFORMATTED sequencial, big endian, 3+4K registros:
@@ -114,10 +131,16 @@ src/bamci/
   spectral.py     FFT + Legendre, filtro de Hoskins, ordem do arquivo
   ic_format.py    layout do arquivo de IC, writer/reader, check
   sst.py          SST semanal (OISST v2.1 / RTG) + mascara do modelo
+  mb09_tables.py  regioes, presets, amplitudes e Tabela 1 do MB09
+  mb09.py         nucleo EOF (random/build/apply) e CLI
+  bamrun.py       driver do BAM (MODELIN, PBS, PostGrib) e CLI
+  score.py        metricas de ensemble (PAC, RMSE, BSS, PECA) e CLI
   pipeline.py     orquestracao completa
   compare.py      comparacao de duas CIs
   pbs.py          geracao de job PBS
   cli.py          interface de linha de comando
+scripts/
+  mb09.sh         pipeline 0-9 do ensaio MB09 (DRY=1 por default)
 ```
 
 ## Limitacoes conhecidas
