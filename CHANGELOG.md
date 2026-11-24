@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.3
+
+- **`--source-delta-sigma`** em `random`/`build`/`apply`: usa o `DeltaSigma.L028` real como coordenada de origem da Tabela 1, com `--delta-sigma` como alvo; em L64 sao **32 camadas** com origem uniforme contra **40 camadas** com a origem L028 real; o `meta` registra o caminho e os valores da origem.
+- **`scripts/mb09.sh`**: `REPO_ROOT` e `SOURCE_DELTA_SIGMA` (default `DeltaSigma/DeltaSigma.L028`), repassado nos passos 3 e 6, com aviso quando o arquivo nao existe.
+- **docs**: resolucao alvo **TQ0213L064** (o perfil do artigo em L64 perturba as camadas altas, que e o desejado); `operacional_l42` e `remove_mean=False` ficam como opt-in de conformidade historica.
 ## 1.2.2
 
 - **N parametrizado**: `N_PERTURBATIONS` impar (default 7) no shell, `--n-modes`

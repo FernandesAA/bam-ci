@@ -41,7 +41,7 @@ continua sendo o default.
 | SST semanal (RTG/OISST) | validada (mascara identica, SST rms 0.58 K, corr 0.9990) |
 | DeltaSigma (espessuras sigma) | 7 arquivos em `DeltaSigma/` (L009..L160) acompanham o pacote, soma 1 |
 | ensaio MB09 (EOF) | nucleo + driver BAM + metricas + shell 0-9; presets oper/ext1/trop/ext2/etsa, 15 membros |
-| testes | 352 (+1 skip), sem dependencia de rede |
+| testes | 354 (+1 skip), sem dependencia de rede |
 
 ## Licenca
 

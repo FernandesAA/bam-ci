@@ -23,6 +23,9 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # --- configuracao (sobrescreva por ambiente) -------------------------------
 SUITE_ROOT="${SUITE_ROOT:-/p/projetos/ioper/fix/sazonal/bam_SeasonalClima-1.2_oper}"
 WORK="${WORK:-$PWD/mb09_work}"
@@ -68,6 +71,10 @@ IC_NAMING="${IC_NAMING:-simple}"
 SKIP_IC="${SKIP_IC:-0}"
 PS_UNITS="${PS_UNITS:-hpa}"
 MB09_VARS="${MB09_VARS:-}"
+# Tabela 1 de q (MB09): mapeamento fisico usa o DeltaSigma.L028 real na origem.
+# Default: DeltaSigma/DeltaSigma.L028 do proprio repo bam-ci. Vazio/inexistente
+# cai na convencao uniforme (k-0.5)/28.
+SOURCE_DELTA_SIGMA="${SOURCE_DELTA_SIGMA:-$REPO_ROOT/DeltaSigma/DeltaSigma.L028}"
 
 MODEL_EXE="${MODEL_EXE:-/p/projetos/ioper/fix/sazonal/bam_SeasonalClima-1.2_oper/model/exec/ParModel_MPI}"
 ENV_SOURCE="${ENV_SOURCE:-/p/projetos/ioper/fix/sazonal/load_modulei_intel_2022_oneapi_mpi.bash}"
@@ -97,7 +104,7 @@ N_PERTURBATIONS (impar, default 7), IC_NAMING, QUEUE, ACCOUNT, WALLTIME,
 PBS_STYLE (mpp|nodes|select), MPPWIDTH, MPPNPPN, MPPDEPTH, OMP_THREADS, RANKS,
 RANKS_PER_NODE, QUEUE_FCST, WALLTIME_FCST, GRIB, DELTA_SIGMA, SST_INPUT,
 SST_SOURCE, MODELIN_TEMPLATE, POSTIN_TEMPLATE, MODEL_EXE, ENV_SOURCE, PYTHON,
-DRY, STEPS.
+SOURCE_DELTA_SIGMA, DRY, STEPS.
 USAGE
 }
 
@@ -118,6 +125,17 @@ while [[ $# -gt 0 ]]; do
     *) echo "mb09.sh: argumento desconhecido: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# --- mapeamento de q: DeltaSigma.L028 real na origem ------------------------
+SOURCE_DELTA_ARGS=()
+if [[ -n "${SOURCE_DELTA_SIGMA:-}" ]]; then
+  if [[ -f "$SOURCE_DELTA_SIGMA" ]]; then
+    SOURCE_DELTA_ARGS=(--source-delta-sigma "$SOURCE_DELTA_SIGMA")
+  else
+    echo "aviso: SOURCE_DELTA_SIGMA nao encontrado ($SOURCE_DELTA_SIGMA);" \
+         "usando sigma uniforme na origem" >&2
+  fi
+fi
 
 # --- validacao de parametros -----------------------------------------------
 if ! [[ "$N_PERTURBATIONS" =~ ^[0-9]+$ ]] || (( N_PERTURBATIONS < 1 )); then
@@ -469,7 +487,8 @@ if want_step 3; then
   run mkdir -p "$RANDOM_DIR" "$MB09_DIR/forecast"
   run "$PYTHON" -m bamci.mb09 random --ic "$IC_CONTROL" \
       --out-dir "$RANDOM_DIR" --n-modes "$N_PERTURBATIONS" --seed "$SEED" \
-      --preset "$PRESET" --resolution "$RESOLUTION" --prefix mb09rand
+      --preset "$PRESET" --resolution "$RESOLUTION" --prefix mb09rand \
+      ${SOURCE_DELTA_ARGS[@]+"${SOURCE_DELTA_ARGS[@]}"}
 fi
 
 # ===========================================================================
@@ -529,10 +548,14 @@ if want_step 6; then
   if [[ -n "$MB09_VARS" ]]; then
     BUILD_ARGS+=(--vars "$MB09_VARS")
   fi
+  if [[ "${#SOURCE_DELTA_ARGS[@]}" -gt 0 ]]; then
+    BUILD_ARGS+=("${SOURCE_DELTA_ARGS[@]}")
+  fi
   run "$PYTHON" -m bamci.mb09 build "${BUILD_ARGS[@]}"
   run "$PYTHON" -m bamci.mb09 apply --eof "$MB09_DIR/eof.npz" \
       --ic "$IC_CONTROL" --out-dir "$FINAL_DIR" --preset "$PRESET" \
-      --resolution "$RESOLUTION" --prefix GANLMB09 --n-modes "$N_PERTURBATIONS"
+      --resolution "$RESOLUTION" --prefix GANLMB09 --n-modes "$N_PERTURBATIONS" \
+      ${SOURCE_DELTA_ARGS[@]+"${SOURCE_DELTA_ARGS[@]}"}
 fi
 
 # ===========================================================================

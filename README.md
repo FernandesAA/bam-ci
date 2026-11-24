@@ -75,8 +75,15 @@ DRY=0 DATE=2026110500 LEAD_DAYS=30 PRESET=etsa scripts/mb09.sh   # executa na ja
 O pipeline cobre IC de controle, SST, 7 ICs aleatorias, 8 previsoes de 36 h,
 PostGrib, EOFs, 15 previsoes e metricas (`bamci.score`). O nucleo e o driver
 tambem podem ser chamados avulso (`python -m bamci.mb09 random|build|apply`,
-`python -m bamci.bamrun ...`). Especificacao, regioes e decisoes D1-D11 em
+`python -m bamci.bamrun ...`). Especificacao, regioes e decisoes D1-D13 em
 [docs/mb09.md](docs/mb09.md); guia de execucao em [docs/uso.md](docs/uso.md).
+
+Resolucao alvo do ensaio no novo operacional: **TQ0213L064**
+(`TRUNC=213 VERT=64`); o perfil de q default e o do artigo
+(`artigo_l28`: 32 camadas perturbadas em L64 na chamada padrao, 40 com
+`source_delta_sigma=DeltaSigma.L028`) e
+`operacional_l42`/`remove_mean=False` sao opt-in de conformidade
+historica.
 
 ## Formatos
 

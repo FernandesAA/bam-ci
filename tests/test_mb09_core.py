@@ -413,6 +413,7 @@ def _write_postgrib_case(tmp_path: Path, seed=0, yrev=False, nlat=8, nlon=16,
         step_txt = "3hr"
     first = datetime(2026, 1, 1) + timedelta(hours=float(hours[0]))
     tdef_first = first.strftime("%HZ%d%b%Y").upper()
+    levs = " ".join(str(k) for k in range(1, nlev + 1))
     ctl = """dset ^gpost.unf
 undef 1e20
 options %s
@@ -422,14 +423,15 @@ zdef %d levels %s
 tdef %d linear %s %s
 vars 5
 pslc 0 99  hPa Surface Pressure
-tvir %d 1 2 3 K Virtual Temperature
-umes %d 1 2 3 kg/kg Specific Humidity
-uvel %d 1 2 3 m/s Zonal Wind
-vvel %d 1 2 3 m/s Meridional Wind
+tvir %d %s K Virtual Temperature
+umes %d %s kg/kg Specific Humidity
+uvel %d %s m/s Zonal Wind
+vvel %d %s m/s Meridional Wind
 endvars
 """ % (options, nlon, 360.0 / nlon, nlat, " ".join("%.3f" % v for v in lat),
        nlev, " ".join(str(k) for k in range(1, nlev + 1)), ntimes,
-       tdef_first, step_txt, nlev, nlev, nlev, nlev)
+       tdef_first, step_txt,
+       nlev, levs, nlev, levs, nlev, levs, nlev, levs)
     (tmp_path / "gpost.ctl").write_text(ctl, encoding="utf-8")
     return tmp_path / "gpost.ctl"
 
@@ -806,4 +808,84 @@ def test_operacional_l42_zeroes_upper_q():
                                q_profile="operacional_l42")
     assert np.all(delta["q"][17:] == 0.0)
     assert np.any(delta["q"][:17] != 0.0)
+
+
+
+# ---------------------------------------------------------------------------
+# extras: mapeamento de Q com DeltaSigma real (L64 -> 40 camadas)
+# ---------------------------------------------------------------------------
+ROOT = Path(__file__).resolve().parents[1]
+DELTA_L028 = ROOT / "DeltaSigma" / "DeltaSigma.L028"
+DELTA_L064 = ROOT / "DeltaSigma" / "DeltaSigma.L064"
+
+
+def _sigma_header_from(delta_sigma):
+    infos = 1.0 - np.concatenate([[0.0], np.cumsum(np.asarray(delta_sigma, float))])
+    infos[-1] = 0.0
+    layers = 0.5 * (infos[:-1] + infos[1:])
+    return ICHeader(sigma_inter=infos, sigma_layers=layers)
+
+
+def test_q_profile_source_delta_sigma_l64():
+    from bamci.levels import read_delta_sigma
+
+    target = read_delta_sigma(DELTA_L064)
+    source = read_delta_sigma(DELTA_L028)
+    # tabela: sigma uniforme na origem -> 32 camadas; L028 real -> 40
+    uniform = mb.q_stddev_for_layers(64, delta_sigma=target)
+    real = mb.q_stddev_for_layers(64, delta_sigma=target,
+                                  source_delta_sigma=source)
+    assert sum(v > 0 for v in uniform) == 32
+    assert sum(v > 0 for v in real) == 40
+
+    nlat, nlon, nlev = 4, 8, 64
+    lat, lon = _grid(nlat, nlon)
+    control = mb09.State(
+        t=np.full((nlev, nlat, nlon), 280.0), q=np.full((nlev, nlat, nlon), 1e-2),
+        u=np.zeros((nlev, nlat, nlon)), v=np.zeros((nlev, nlat, nlon)),
+        ps=np.full((nlat, nlon), 1000.0), lat=lat, lon=lon,
+        header=_sigma_header_from(target),
+    )
+    rng = np.random.default_rng(64)
+    shape = (nlev, nlat, nlon)
+    coef = np.linspace(0.1, 1.0, mb.M_TIMES)
+    diffs = {1: _time_series(
+        rng.normal(size=shape), np.abs(rng.normal(size=shape)) * 1e-4,
+        rng.normal(size=(nlat, nlon)),
+        rng.normal(size=shape), rng.normal(size=shape),
+        lat, lon, coef)}
+
+    eofs_real = mb09.build_eofs(diffs, preset="trop", n=1,
+                                source_delta_sigma=DELTA_L028)
+    assert eofs_real["meta"]["source_delta_sigma"] == str(DELTA_L028)
+    assert len(eofs_real["meta"]["source_delta_sigma_values"]) == 28
+    states = mb09.apply_modes(control, eofs_real, preset="trop", n=1)
+    dq = states[0].q - control.q
+    assert sum(bool(np.any(dq[k] != 0.0)) for k in range(64)) == 40
+
+    # sem o flag: convencao uniforme na origem -> 32 camadas
+    eofs_uniform = mb09.build_eofs(diffs, preset="trop", n=1)
+    assert eofs_uniform["meta"]["source_delta_sigma"] is None
+    dq2 = mb09.apply_modes(control, eofs_uniform, preset="trop", n=1)[0].q - control.q
+    assert sum(bool(np.any(dq2[k] != 0.0)) for k in range(64)) == 32
+
+
+def test_build_from_files_source_delta_sigma_meta(tmp_path):
+    ctl = _write_postgrib_case(tmp_path / "c", seed=1, nlat=4, nlon=8, nlev=64)
+    out = tmp_path / "eof.npz"
+    rc = mb09.main(["build", "--control", str(ctl), "--members", str(ctl),
+                    "--preset", "trop", "--n", "1",
+                    "--source-delta-sigma", str(DELTA_L028),
+                    "--out", str(out)])
+    assert rc == 0
+    saved = mb09.load_eofs(out)
+    assert saved["meta"]["source_delta_sigma"] == str(DELTA_L028)
+    assert len(saved["meta"]["source_delta_sigma_values"]) == 28
+
+    # sem o flag o meta registra None (convencao uniforme)
+    out2 = tmp_path / "eof_uniform.npz"
+    rc = mb09.main(["build", "--control", str(ctl), "--members", str(ctl),
+                    "--preset", "trop", "--n", "1", "--out", str(out2)])
+    assert rc == 0
+    assert mb09.load_eofs(out2)["meta"]["source_delta_sigma"] is None
 

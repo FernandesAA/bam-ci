@@ -98,7 +98,7 @@ import numpy as np
 from . import mb09_tables as mb
 from .derivatives import A_EARTH, dpln_columns, spectral_div_vort
 from .ic_format import ICHeader, n_coeffs, read_ic, write_ic
-from .levels import gaussian_latitudes, grid_shape
+from .levels import gaussian_latitudes, grid_shape, read_delta_sigma
 from .spectral import analysis, file_order, from_file_order, legendre_columns, synthesis
 
 __all__ = [
@@ -481,20 +481,64 @@ def _validate_q_profile(profile) -> str:
     return p
 
 
-def _q_profile_values(nlev: int, profile=DEFAULT_Q_PROFILE) -> np.ndarray:
+def _delta_sigma_input(value, name: str = "delta_sigma"):
+    """Normaliza delta_sigma: None | caminho | sequencia -> (valores, caminho)."""
+    if value is None:
+        return None, None
+    if isinstance(value, (str, Path)):
+        return np.asarray(read_delta_sigma(value), dtype=np.float64), str(value)
+    arr = np.asarray(value, dtype=np.float64).ravel()
+    if arr.size == 0:
+        raise ValueError("%s vazio" % (name,))
+    if np.any(arr <= 0.0):
+        raise ValueError("%s tem espessura nao positiva" % (name,))
+    return arr, None
+
+
+def _delta_sigma_from_header(state: State):
+    """Espessuras sigma reais das camadas do IC (header sigma), se houver."""
+    header = state.header
+    inter = None if header is None else header.sigma_inter
+    if inter is None:
+        return None
+    inter = np.asarray(inter, dtype=np.float64).ravel()
+    if inter.size != state.nlev + 1:
+        return None
+    delta = -np.diff(inter)
+    if delta.size != state.nlev or np.any(delta <= 0.0):
+        return None
+    return delta
+
+
+def _q_profile_values(nlev: int, profile=DEFAULT_Q_PROFILE,
+                      source_delta_sigma=None,
+                      delta_sigma=None) -> np.ndarray:
     """Perfil sigma_f de q (kg/kg) para nlev camadas.
 
-    Repassa 'profile' para mb09_tables.q_stddev_for_layers(..., profile=...).
-    'operacional_l42' exige nlev=42 (a propria tabela da o erro).
+    Repassa 'profile', 'delta_sigma' (camadas do modelo) e
+    'source_delta_sigma' (camadas do L28 do artigo) para
+    mb09_tables.q_stddev_for_layers. Usar as espessuras reais nas duas pontas
+    e' o mapeamento fisico correto (ex.: L64 -> 40 camadas perturbadas em vez
+    de 32 com sigma uniforme). 'operacional_l42' exige nlev=42.
     """
     p = _validate_q_profile(profile)
-    return np.asarray(mb.q_stddev_for_layers(nlev, profile=p), dtype=np.float64)
+    source, _ = _delta_sigma_input(source_delta_sigma, "source_delta_sigma")
+    target, _ = _delta_sigma_input(delta_sigma, "delta_sigma")
+    return np.asarray(
+        mb.q_stddev_for_layers(
+            nlev, delta_sigma=target, source_delta_sigma=source, profile=p),
+        dtype=np.float64)
 
 
-def _random_delta_once(state: State, rng, sigma, q_profile=DEFAULT_Q_PROFILE) -> dict:
+def _random_delta_once(state: State, rng, sigma, q_profile=DEFAULT_Q_PROFILE,
+                       source_delta_sigma=None, delta_sigma=None) -> dict:
     """Uma realizacao das perturbacoes aleatorias gaussianas (passo 1)."""
     sig = {"u": 3.0, "v": 3.0, "t": 0.6, "ps": 1.0}
-    qprof = _q_profile_values(state.nlev, q_profile)
+    if delta_sigma is None:
+        delta_sigma = _delta_sigma_from_header(state)
+    qprof = _q_profile_values(state.nlev, q_profile,
+                              source_delta_sigma=source_delta_sigma,
+                              delta_sigma=delta_sigma)
 
     if sigma:
         for key, value in sigma.items():
@@ -521,7 +565,8 @@ def _random_delta_once(state: State, rng, sigma, q_profile=DEFAULT_Q_PROFILE) ->
 
 def random_deltas(state: State, rng, sigma: Optional[Mapping[str, object]] = None,
                   *, n: Optional[int] = None,
-                  q_profile: str = DEFAULT_Q_PROFILE):
+                  q_profile: str = DEFAULT_Q_PROFILE,
+                  source_delta_sigma=None, delta_sigma=None):
     """Perturbacoes aleatorias gaussianas de media zero (passo 1 do MB09).
 
     Defaults (p. 1441-1442): vento 3.0 m/s (u e v independentes), T 0.6 K,
@@ -532,15 +577,24 @@ def random_deltas(state: State, rng, sigma: Optional[Mapping[str, object]] = Non
     Sem 'n' retorna UM dict com 'u','v','t','ps','q' (unidades do State, ps em
     hPa). Com 'n' (impar, >= 1) retorna uma LISTA com n dicts independentes.
     'q_profile' escolhe a tabela de sigma de q (artigo_l28 default,
-    operacional_l42).
+    operacional_l42). 'source_delta_sigma' (ex.: DeltaSigma.L028) e
+    'delta_sigma' (camadas do modelo; default = header sigma do State) usam as
+    espessuras reais no mapeamento da Tabela 1.
     """
     _validate_q_profile(q_profile)
+    if delta_sigma is None:
+        delta_sigma = _delta_sigma_from_header(state)
     if not isinstance(rng, np.random.Generator):
         rng = np.random.default_rng(rng)
     if n is None:
-        return _random_delta_once(state, rng, sigma, q_profile=q_profile)
+        return _random_delta_once(state, rng, sigma, q_profile=q_profile,
+                                  source_delta_sigma=source_delta_sigma,
+                                  delta_sigma=delta_sigma)
     n = _check_n(n)
-    return [_random_delta_once(state, rng, sigma, q_profile=q_profile) for _ in range(n)]
+    return [_random_delta_once(state, rng, sigma, q_profile=q_profile,
+                               source_delta_sigma=source_delta_sigma,
+                               delta_sigma=delta_sigma)
+            for _ in range(n)]
 
 
 _DELTA_ALIASES = {"tvir": "t", "p": "ps", "sphu": "q"}
@@ -821,7 +875,8 @@ def _first_state(member) -> State:
 def build_eofs(diffs, preset: str = mb.DEFAULT_PRESET, weights=None,
                *, n: Optional[int] = None, keep_basis: bool = False,
                remove_mean: bool = True,
-               q_profile: str = DEFAULT_Q_PROFILE) -> dict:
+               q_profile: str = DEFAULT_Q_PROFILE,
+               source_delta_sigma=None) -> dict:
     """Calcula o 1o EOF por membro/campo/regiao a partir das series de diferencas.
 
     Parameters
@@ -848,6 +903,9 @@ def build_eofs(diffs, preset: str = mb.DEFAULT_PRESET, weights=None,
     q_profile:
         'artigo_l28' (default) ou 'operacional_l42'; repassado para
         mb09_tables.q_stddev_for_layers(profile=...). Registrado em meta.
+    source_delta_sigma:
+        caminho (ou sequencia) das espessuras do L28 do artigo; None usa a
+        convencao uniforme (k-0.5)/28. Registrado em meta.
 
     Returns
     -------
@@ -856,6 +914,8 @@ def build_eofs(diffs, preset: str = mb.DEFAULT_PRESET, weights=None,
     n_requested/n_available/n_used/remove_mean/q_profile.
     """
     _validate_q_profile(q_profile)
+    src_values, src_path = _delta_sigma_input(source_delta_sigma,
+                                              "source_delta_sigma")
     keys = list(diffs.keys())
     if not keys:
         raise ValueError("diffs vazio")
@@ -892,6 +952,9 @@ def build_eofs(diffs, preset: str = mb.DEFAULT_PRESET, weights=None,
         "n_used": n_used,
         "remove_mean": bool(remove_mean),
         "q_profile": _validate_q_profile(q_profile),
+        "source_delta_sigma": src_path,
+        "source_delta_sigma_values": (None if src_values is None
+                                      else [float(v) for v in src_values]),
     })
     return eofs
 
@@ -899,13 +962,16 @@ def build_eofs(diffs, preset: str = mb.DEFAULT_PRESET, weights=None,
 # ---------------------------------------------------------------------------
 # aplicacao dos modos
 # ---------------------------------------------------------------------------
-def _targets(nlev: int, sigma=None,
-             q_profile=DEFAULT_Q_PROFILE) -> Dict[str, np.ndarray]:
+def _targets(nlev: int, sigma=None, q_profile=DEFAULT_Q_PROFILE,
+             source_delta_sigma=None,
+             delta_sigma=None) -> Dict[str, np.ndarray]:
     target = {
         "P": float(mb.AMPLITUDES_TARGET["P"]),
         "T": float(mb.AMPLITUDES_TARGET["T"]),
         "wind": float(mb.AMPLITUDES_TARGET["wind"]),
-        "Q": _q_profile_values(nlev, q_profile),
+        "Q": _q_profile_values(nlev, q_profile,
+                               source_delta_sigma=source_delta_sigma,
+                               delta_sigma=delta_sigma),
     }
     if sigma:
         for key, value in sigma.items():
@@ -962,7 +1028,9 @@ def _align_mode(mode: np.ndarray, eof_lat, eof_lon, lat, lon) -> np.ndarray:
 
 def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEFAULT_PRESET,
                 sigma=None, *, n: Optional[int] = None,
-                q_profile: Optional[str] = None) -> List[State]:
+                q_profile: Optional[str] = None,
+                source_delta_sigma=None,
+                delta_sigma=None) -> List[State]:
     """Gera os 2n estados x_c +/- p_k, na ordem +p_1, -p_1, ..., +p_n, -p_n.
 
     'preset' serve para validar que o eofs foi construido com o mesmo preset;
@@ -971,6 +1039,8 @@ def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEF
     'n' (impar, >= 1) usa os n primeiros modos do eofs; None usa todos. Pedir
     mais modos do que existem no eofs e' erro. 'q_profile' (artigo_l28 default,
     operacional_l42); None usa o perfil gravado em eofs["meta"].
+    'source_delta_sigma' None usa o gravado em eofs["meta"]; 'delta_sigma' None
+    usa as espessuras sigma reais do header do IC (ou uniforme, sem header).
     """
     eof_preset = eofs.get("preset", preset)
     if preset is None or str(preset) == eof_preset:
@@ -990,10 +1060,19 @@ def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEF
                 "eofs tem %d modo(s); n=%d pede mais do que existe"
                 % (len(members), n_used))
     members = members[:n_used]
+    meta = eofs.get("meta", {})
     if q_profile is None:
-        q_profile = eofs.get("meta", {}).get("q_profile", DEFAULT_Q_PROFILE)
+        q_profile = meta.get("q_profile", DEFAULT_Q_PROFILE)
     q_profile = _validate_q_profile(q_profile)
-    targets = _targets(control.nlev, sigma, q_profile)
+    if source_delta_sigma is None:
+        source_delta_sigma = meta.get("source_delta_sigma_values")
+        if source_delta_sigma is None:
+            source_delta_sigma = meta.get("source_delta_sigma")
+    if delta_sigma is None:
+        delta_sigma = _delta_sigma_from_header(control)
+    targets = _targets(control.nlev, sigma, q_profile,
+                       source_delta_sigma=source_delta_sigma,
+                       delta_sigma=delta_sigma)
     lat = eofs["lat"]
     lon = eofs["lon"]
 
@@ -1031,18 +1110,22 @@ def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEF
 def write_ensemble(control_path: Union[str, Path], states: Sequence[State],
                    out_dir: Union[str, Path], prefix: str = "mb09", *,
                    suffix: str = "", q_profile: Optional[str] = None,
-                   remove_mean: Optional[bool] = None) -> List[Path]:
+                   remove_mean: Optional[bool] = None,
+                   source_delta_sigma: Optional[str] = None) -> List[Path]:
     """Grava controle + 2n estados (2n+1 arquivos) e members.json.
 
     Nomes: '<prefix>_000.unf<suffix>' (controle, copia do arquivo original),
     '<prefix>_001.unf<suffix>' (+p_1), '_002' (-p_1), ... cada State e' gravado
     com o cabecalho do IC de controle. 'states' precisa ter 2n estados (n >= 1);
-    o members.json registra n, n_members e (quando informados) q_profile e
-    remove_mean.
+    o members.json registra n, n_members e (quando informados) q_profile,
+    remove_mean e source_delta_sigma.
     Retorna [controle, +p_1, -p_1, ..., +p_n, -p_n].
     """
     if q_profile is not None:
         q_profile = _validate_q_profile(q_profile)
+    if source_delta_sigma is not None:
+        _, source_delta_sigma = _delta_sigma_input(
+            source_delta_sigma, "source_delta_sigma")
     if len(states) == 0 or len(states) % 2:
         raise ValueError(
             "write_ensemble espera 2n estados (n >= 1); recebido %d" % (len(states),))
@@ -1079,6 +1162,8 @@ def write_ensemble(control_path: Union[str, Path], states: Sequence[State],
         manifest["q_profile"] = q_profile
     if remove_mean is not None:
         manifest["remove_mean"] = bool(remove_mean)
+    if source_delta_sigma is not None:
+        manifest["source_delta_sigma"] = source_delta_sigma
     (out_dir / "members.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return paths
@@ -1111,7 +1196,8 @@ def run_mb09(control_ic: Union[str, Path], member_ics, out_dir: Union[str, Path]
              preset: str = mb.DEFAULT_PRESET, seed: int = 0, *,
              n: int = mb.N_PERTURBATIONS, prefix: str = "mb09", suffix: str = "",
              sigma=None, remove_mean: bool = True,
-             q_profile: str = DEFAULT_Q_PROFILE) -> List[Path]:
+             q_profile: str = DEFAULT_Q_PROFILE,
+             source_delta_sigma=None) -> List[Path]:
     """Build + apply a partir das series ja integradas.
 
     'control_ic' e' o IC da analise de controle (estado base a perturbar).
@@ -1120,7 +1206,8 @@ def run_mb09(control_ic: Union[str, Path], member_ics, out_dir: Union[str, Path]
     em formato IC (State.from_ic_file). 'n' (impar, default 7) e' o numero de
     perturbacoes: se houver mais series, usa as n primeiras; se houver menos,
     erro. 'seed' e' apenas proveniencia aqui: a integracao de 36 h e' externa.
-    'remove_mean' e 'q_profile' seguem para build/apply e para o members.json.
+    'remove_mean', 'q_profile' e 'source_delta_sigma' seguem para build/apply
+    e para o members.json.
 
     Retorna os 2n+1 caminhos gravados por 'write_ensemble'.
     """
@@ -1148,11 +1235,13 @@ def run_mb09(control_ic: Union[str, Path], member_ics, out_dir: Union[str, Path]
         states = [State.from_ic_file(p) for p in paths]
         diffs[k] = [_diff_state(s, c) for s, c in zip(states, ctrl)]
     eofs = build_eofs(diffs, preset, n=n, remove_mean=remove_mean,
-                       q_profile=q_profile)
+                       q_profile=q_profile, source_delta_sigma=source_delta_sigma)
     eofs["meta"]["seed"] = int(seed)
-    states = apply_modes(control, eofs, preset, sigma, n=n, q_profile=q_profile)
+    states = apply_modes(control, eofs, preset, sigma, n=n, q_profile=q_profile,
+                         source_delta_sigma=source_delta_sigma)
     return write_ensemble(control_ic, states, out_dir, prefix, suffix=suffix,
-                          q_profile=q_profile, remove_mean=remove_mean)
+                          q_profile=q_profile, remove_mean=remove_mean,
+                          source_delta_sigma=source_delta_sigma)
 
 
 # ---------------------------------------------------------------------------
@@ -1400,7 +1489,8 @@ def build_eofs_from_files(control_ctl: Union[str, Path],
                           hours=None, window=None, analysis_time=None,
                           n: Optional[int] = None,
                           remove_mean: bool = True,
-                          q_profile: str = DEFAULT_Q_PROFILE) -> dict:
+                          q_profile: str = DEFAULT_Q_PROFILE,
+                          source_delta_sigma=None) -> dict:
     """Como build_eofs, mas lendo .ctl/.unf do PostGrib (grade, M tempos).
 
     Cada serie (controle e n membros) e' um unico .ctl com nt tempos. A janela
@@ -1423,9 +1513,13 @@ def build_eofs_from_files(control_ctl: Union[str, Path],
     primeiros; se for maior que o numero de membros, erro.
 
     'remove_mean' (default True) e 'q_profile' (artigo_l28 default) seguem para
-    a analise EOF e sao registrados em eofs["meta"].
+    a analise EOF e sao registrados em eofs["meta"]. 'source_delta_sigma' e' o
+    caminho das espessuras reais do L28 (ex.: DeltaSigma/DeltaSigma.L028);
+    None mantem a convencao uniforme (k-0.5)/28. Tambem vai para meta.
     """
     _validate_q_profile(q_profile)
+    src_values, src_path = _delta_sigma_input(source_delta_sigma,
+                                              "source_delta_sigma")
     member_ctls = list(member_ctls)
     available = len(member_ctls)
     if n is None:
@@ -1488,6 +1582,9 @@ def build_eofs_from_files(control_ctl: Union[str, Path],
         "n_used": n_used,
         "remove_mean": bool(remove_mean),
         "q_profile": _validate_q_profile(q_profile),
+        "source_delta_sigma": src_path,
+        "source_delta_sigma_values": (None if src_values is None
+                                      else [float(v) for v in src_values]),
     })
     return eofs
 
@@ -1643,14 +1740,20 @@ def _parse_sigma(text: Optional[str]) -> Optional[Dict[str, object]]:
 def _cmd_random(args) -> int:
     n = _check_n(args.n_modes)
     q_profile = _validate_q_profile(args.q_profile)
+    source_delta_sigma = args.source_delta_sigma
+    if source_delta_sigma is not None:
+        _, source_delta_sigma = _delta_sigma_input(source_delta_sigma,
+                                                   "source_delta_sigma")
     control = State.from_ic_file(args.ic)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed)
     suffix = (".%s" % args.resolution) if args.resolution else ""
     paths = []
-    for k, delta in enumerate(random_deltas(control, rng, n=n, q_profile=q_profile),
-                              start=1):
+    for k, delta in enumerate(random_deltas(
+            control, rng, n=n, q_profile=q_profile,
+            source_delta_sigma=source_delta_sigma,
+            delta_sigma=args.delta_sigma), start=1):
         state = perturbed_state(control, delta)
         path = out_dir / ("%s_%02d.unf%s" % (args.prefix, k, suffix))
         state.to_ic_file(path, template=args.ic)
@@ -1663,6 +1766,7 @@ def _cmd_random(args) -> int:
         "n": n,
         "n_members": n,
         "q_profile": q_profile,
+        "source_delta_sigma": source_delta_sigma,
     }
     (out_dir / "random.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1701,16 +1805,18 @@ def _cmd_build(args) -> int:
         variables=_parse_vars(args.vars), ps_units=args.ps_units,
         hours=hours, window=window, analysis_time=args.analysis_time, n=n,
         remove_mean=remove_mean, q_profile=q_profile,
+        source_delta_sigma=args.source_delta_sigma,
     )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     save_eofs(out, eofs)
     print("eof: %s (n=%d, M=%d, preset=%s, campos=%s, remove_mean=%s, "
-          "q_profile=%s, horas=%s)"
+          "q_profile=%s, source_delta_sigma=%s, horas=%s)"
           % (out, eofs["n"], eofs["m_times"], eofs["preset"],
              ",".join(eofs["eof_fields"]),
              "yes" if eofs["meta"]["remove_mean"] else "no",
              eofs["meta"]["q_profile"],
+             eofs["meta"].get("source_delta_sigma") or "uniforme",
              ",".join("%g" % h for h in eofs["meta"].get("hours", []))))
     ignored = int(eofs["meta"].get("n_ignored_times", 0))
     if ignored:
@@ -1727,14 +1833,20 @@ def _cmd_apply(args) -> int:
         print("aviso: eof.npz tem %d modo(s); usando os %d primeiros (n=%d)"
               % (eofs["n"], n, n))
     q_profile = _validate_q_profile(args.q_profile or meta.get("q_profile"))
+    source_delta_sigma = args.source_delta_sigma
+    if source_delta_sigma is None:
+        source_delta_sigma = meta.get("source_delta_sigma")
     control = State.from_ic_file(args.ic)
     preset = args.preset or eofs["preset"]
     states = apply_modes(control, eofs, preset, _parse_sigma(args.sigma), n=n,
-                         q_profile=q_profile)
+                         q_profile=q_profile,
+                         source_delta_sigma=args.source_delta_sigma,
+                         delta_sigma=args.delta_sigma)
     suffix = (".%s" % args.resolution) if args.resolution else ""
     paths = write_ensemble(args.ic, states, args.out_dir, args.prefix, suffix=suffix,
                            q_profile=q_profile,
-                           remove_mean=meta.get("remove_mean"))
+                           remove_mean=meta.get("remove_mean"),
+                           source_delta_sigma=source_delta_sigma)
     for path in paths:
         print(path)
     return 0
@@ -1757,6 +1869,10 @@ def build_parser():
     p.add_argument("--preset", default=mb.DEFAULT_PRESET)
     p.add_argument("--q-profile", default=DEFAULT_Q_PROFILE, choices=Q_PROFILES,
                    help="tabela de sigma de q (default %s)" % (DEFAULT_Q_PROFILE,))
+    p.add_argument("--source-delta-sigma", default=None,
+                   help="DeltaSigma.L028 para mapear a Tabela 1 (default uniforme)")
+    p.add_argument("--delta-sigma", default=None,
+                   help="DeltaSigma do modelo (default: header sigma do IC)")
     p.add_argument("--resolution", default=None, help="sufixo do nome, ex. TQ0126L042")
     p.add_argument("--prefix", default="mb09rand")
     p.set_defaults(func=_cmd_random)
@@ -1776,6 +1892,8 @@ def build_parser():
                         "o operacional usa no)")
     p.add_argument("--q-profile", default=DEFAULT_Q_PROFILE, choices=Q_PROFILES,
                    help="tabela de sigma de q (default %s)" % (DEFAULT_Q_PROFILE,))
+    p.add_argument("--source-delta-sigma", default=None,
+                   help="DeltaSigma.L028 para mapear a Tabela 1 (default uniforme)")
     p.add_argument("--window", default="6:36:3",
                    help="janela inicio:fim:passo em horas (default 6:36:3 => M=11)")
     p.add_argument("--times", default=None,
@@ -1797,6 +1915,10 @@ def build_parser():
     p.add_argument("--prefix", default="mb09")
     p.add_argument("--q-profile", default=None, choices=Q_PROFILES,
                    help="sobrescreve o q_profile gravado no eofs")
+    p.add_argument("--source-delta-sigma", default=None,
+                   help="sobrescreve o DeltaSigma.L028 gravado no eofs")
+    p.add_argument("--delta-sigma", default=None,
+                   help="DeltaSigma do modelo (default: header sigma do IC)")
     p.add_argument("--sigma", default=None, help="ex. T=1.5,wind=5.0,p=1.0")
     p.set_defaults(func=_cmd_apply)
     return parser

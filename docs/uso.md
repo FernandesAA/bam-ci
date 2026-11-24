@@ -167,7 +167,21 @@ data de analise:
 
 O preset default e `etsa` (regioes NH, SH, TR, NSA, SSA; campos P, T, Q, U, V).
 A regiao e o perfil de umidade seguem o artigo; as escolhas nao especificadas
-estao documentadas como **D1-D11** em [MB09](mb09.md).
+estao documentadas como **D1-D13** em [MB09](mb09.md).
+
+**Resolucao alvo do novo operacional: TQ0213L064** (substitui T126L28 do artigo e
+T126L42 do `oensMB09_bam_xc50`). Exemplo:
+
+```bash
+export TRUNC=213 VERT=64                                  # TQ0213L064
+export DELTA_SIGMA=DeltaSigma/DeltaSigma.L064
+export PRESET=etsa                                       # default
+```
+
+O default cientifico do perfil de q continua sendo o do artigo
+(`artigo_l28`: em L64 perturba as camadas 1-32 na chamada padrao e 1-40 com
+`source_delta_sigma=DeltaSigma.L028`); `operacional_l42` e `remove_mean=False`
+sao opt-in de conformidade com o operacional atual.
 
 ### Execucao de ponta a ponta
 
