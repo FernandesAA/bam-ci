@@ -42,7 +42,7 @@ rotulo unico (`-r`) ou os campos separados (`--mend`, `--kmax`, `--grid`):
 
 ```bash
 bamci run --case GFS --date 2026110500 -r TQ0213L64 \
-          --grib gfs.grib --delta-sigma DeltaSigma.L064 --out-dir model/datain
+          --grib gfs.grib --delta-sigma DeltaSigma/DeltaSigma.L064 --out-dir model/datain
 
 bamci run --case ERA5 --date 2026110500 --mend 666 --kmax 42 \
           --grib era5.grib --delta-sigma DeltaSigma.L042 --out-dir model/datain
@@ -71,6 +71,37 @@ Tabela de referencia (grade gaussiana e tamanho do arquivo):
 
 O `DeltaSigma.Lxxx` tem de ter exatamente `kmax` camadas; o pipeline aborta
 com mensagem explicita se nao bater.
+
+### Arquivos DeltaSigma que acompanham o pacote
+
+A partir da 1.1.4 o repositorio acompanha os arquivos operacionais em
+`DeltaSigma/`, com o nome original de cada um:
+
+| arquivo | camadas | resolucao tipica |
+|---|---|---|
+| `DeltaSigma/DeltaSigma.L009` | 9 | - |
+| `DeltaSigma/DeltaSigma.L018` | 18 | - |
+| `DeltaSigma/DeltaSigma.L028` | 28 | TQ062L028 (legado) |
+| `DeltaSigma/DeltaSigma.L042` | 42 | TQ0126L042 (default) |
+| `DeltaSigma/DeltaSigma.L064` | 64 | TQ0213L64 |
+| `DeltaSigma/DeltaSigma.L096` | 96 | - |
+| `DeltaSigma/DeltaSigma.L160` | 160 | `--kmax 160` |
+
+Entao nao e mais preciso buscar o arquivo na jaci: basta apontar para a copia
+do pacote (ou para a copia local do clone):
+
+```bash
+bamci run --case GFS --date 2026110500 -r TQ0213L64 \
+          --grib gfs.grib --delta-sigma DeltaSigma/DeltaSigma.L064 --out-dir model/datain
+
+bamci run --case ERA5 --date 2026102300 -r TQ0126L042 \
+          --grib DataAnl/era5.grib --delta-sigma DeltaSigma/DeltaSigma.L042 \
+          --out-dir model/datain
+```
+
+Se o `bamci` estiver instalado em outro diretorio, use o caminho absoluto da
+copia no clone. Formato e procedencia estao em
+[Formatos de arquivo](formatos.md#deltasigma-lnnn-espessuras-sigma).
 
 ## 3. SST semanal
 

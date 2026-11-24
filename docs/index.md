@@ -23,7 +23,7 @@ continua sendo o default.
 
 - [Instalacao](instalacao.md)
 - [Uso](uso.md) — CLI e submissao PBS
-- [Formatos de arquivo](formatos.md) — IC e SST
+- [Formatos de arquivo](formatos.md) — IC, SST e DeltaSigma
 - [Validacao](validacao.md) — numeros medidos contra a producao
 - [Literatura: perturbacao de condicoes iniciais](literatura-perturbacoes.md)
 - [API](api.md) — modulos e funcoes principais
@@ -37,7 +37,8 @@ continua sendo o default.
 | condicao inicial (TQ126L42, sigma) | validada contra a producao (topografia corr 0.994, ps rms 9,4 hPa, T rms ~1 K) |
 | outras resolucoes (T213L64, T254L42, TL95L42) | pipeline ponta a ponta com tamanho de arquivo exato |
 | SST semanal (RTG/OISST) | validada (mascara identica, SST rms 0.58 K, corr 0.9990) |
-| testes | 143, sem dependencia de rede |
+| DeltaSigma (espessuras sigma) | 7 arquivos em `DeltaSigma/` (L009..L160) acompanham o pacote, soma 1 |
+| testes | 183 (+1 skip), sem dependencia de rede |
 
 ## Licenca
 

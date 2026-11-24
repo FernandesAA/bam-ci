@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.4
+
+O repositorio passa a acompanhar os arquivos `DeltaSigma.Lxxx` (espessuras
+sigma) usados pelo pre-processamento, em `DeltaSigma/`.
+
+- **7 arquivos** byte-identicos a
+  `/p/projetos/ioper/fix/sazonal/bam_SeasonalClima-1.2_oper/pre/datain` (jaci),
+  com os nomes originais: `L009`, `L018`, `L028`, `L042`, `L064`, `L096`,
+  `L160` (83 a 1472 bytes). Nao e mais preciso buscar na jaci:
+  `--delta-sigma DeltaSigma/DeltaSigma.L042`.
+- **`tests/test_deltasigma_files.py`** (22 testes): para cada arquivo, o numero
+  de valores e igual ao `NNN` do nome, todos positivos, soma 1 (tolerancia
+  `1e-4`) e soma normalizada entregue por `read_delta_sigma` (`1.0`, atol
+  `1e-12`).
+- **`DeltaSigma.L064`** da origem soma **0.999976** (residuo de 2.4e-5 do
+  arquivo operacional, identico ao `L064_NEW-42to64` da jaci); `read_delta_sigma`
+  normaliza, entao a CI gerada nao muda. Os outros seis fecham em 1e-6.
+- docs: `uso.md` (exemplo com `DeltaSigma/DeltaSigma.L064` para TQ0213L64),
+  `formatos.md` (formato `(5F9.6)`, soma 1, procedencia e a nota do L064) e
+  `index.md`.
+
+- Testes: 161 -> 183 (mais 1 skip em ambos).
+
 ## 1.1.3
 
 `bamci sst` lia o eixo de tempo do OISST por rotulo e falhava em arquivos reais.

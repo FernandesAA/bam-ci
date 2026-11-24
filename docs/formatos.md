@@ -46,6 +46,40 @@ Fortran **UNFORMATTED DIRECT**, recl = 192*384*4, sem marcadores, 2 registros
 A grade e a mesma 192x384, porem com **longitudes crescentes** (0 -> 360) — diferente
 da CI. A mascara de terra tem 24.469 pontos.
 
+## DeltaSigma.LNNN — espessuras sigma
+
+Texto puro, formato Fortran `(5F9.6)` (5 valores por linha, campo de 9 colunas):
+NNN **espessuras de camada** em coordenada sigma, uma por camada, ordenadas da
+superficie para o topo. Nao ha cabecalho nem contagem de valores — o `NNN` do
+nome e a unica indicacao do numero de camadas, e o pipeline exige que ele seja
+igual ao `kmax` pedido.
+
+Propriedades (verificadas em `tests/test_deltasigma_files.py`):
+
+- a soma das NNN espessuras e 1 (tolerancia 1e-4 nos arquivos do pacote);
+- todos os valores sao positivos;
+- `bamci.levels.read_delta_sigma` normaliza a soma quando ela se afasta de 1
+  por mais de 1e-5, e `sigma_interfaces` devolve as interfaces
+  `0, d1, d1+d2, ..., 1`.
+
+```bash
+bamci run --case GFS --date 2026110500 -r TQ0213L64 \
+          --grib gfs.grib --delta-sigma DeltaSigma/DeltaSigma.L064 --out-dir model/datain
+```
+
+### Procedencia (1.1.4)
+
+Copia **byte-identica** de
+`/p/projetos/ioper/fix/sazonal/bam_SeasonalClima-1.2_oper/pre/datain` (jaci),
+mantendo os nomes originais: `DeltaSigma.L009`, `.L018`, `.L028`, `.L042`,
+`.L064`, `.L096` e `.L160` (83 a 1472 bytes). Nada foi reescrito ou arredondado.
+
+**Nota sobre o L064**: na origem `DeltaSigma.L064` soma **0.999976** — residuo de
+2.4e-5 do arquivo operacional, que e identico ao `DeltaSigma.L064_NEW-42to64` da
+mesma pasta. E o unico dos sete acima de 1e-6; como o leitor normaliza, a CI
+gerada nao muda. O `DeltaSigma.L064_ORIG` daquela pasta (soma exata 1) **nao**
+foi copiado; os demais `DeltaSigma.L064_*` (`_NEW`, `_NEW-28to64`) tambem nao.
+
 ## Filtro espectral
 
 A producao aplica o filtro de Hoskins (`SmthPerCut=0.12`, `Iter=10`):
