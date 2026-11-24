@@ -2,6 +2,9 @@ include README.md LICENSE CHANGELOG.md CONTRIBUTING.md CITATION.cff
 recursive-include src/bamci py.typed
 recursive-include docs *.md
 recursive-include tests *.py
+recursive-include scripts *.sh
+recursive-include containers *
+recursive-include DeltaSigma *
 prune qa
 prune reference
 prune dist

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- **sdist**: passa a incluir `scripts/mb09.sh` (executavel), `containers/` e `DeltaSigma/`.
+
 ## 1.2.0
 
 Ensaio **MB09** de perturbacao de condicoes iniciais (Mendonca & Bonatti, 2009,
