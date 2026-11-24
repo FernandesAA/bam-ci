@@ -10,7 +10,13 @@ ICnAGCM/Utils.f90 (NewSigma, NewPs). Regras (docs/spec_fortran.md §6-7):
 * clamp de monotonicidade entre os dois nos internos do intervalo (evita
   overshoot do cubico);
 * abaixo do nivel mais baixo (p_out > p_in[0]): temperatura com gradiente
-  constante de -6.5 K/km e umidade com UR constante.
+  constante de -6.5 K/km e umidade com UR constante;
+* acima do topo da entrada (p_out < p_in[-1], tipico de L64: topo ~0.01-0.02
+  hPa contra 1 hPa da ERA5): T fica isosterica no valor do topo e q decai
+  exponencialmente em -ln(p), indo a 0 (nunca negativa);
+* nao devolve NaN/inf: no fim do vert_sigma_inter o T e' clipado em [150,350] K
+  e q em [0,0.05] kg/kg, com RuntimeWarning e a contagem quando ha clip
+  (physical=True; a divergencia/vorticidade usa physical=False).
 """
 
 from __future__ import annotations
@@ -29,7 +35,11 @@ ROCP1 = ROCP + 1.0
 DLTDZ = GAMMA * RD / GRAV          # -0.19029 (K/m normalizado)
 DLPVDRT = -LC / RV                 # -5417.1
 
-__all__ = ["new_sigma", "new_ps", "interp_logp", "vert_sigma_inter", "surface_fix"]
+__all__ = ["new_sigma", "new_ps", "interp_logp", "vert_sigma_inter", "surface_fix",
+           "clip_physical"]
+
+T_MIN, T_MAX = 150.0, 350.0        # faixa fisica de temperatura (K)
+Q_MIN, Q_MAX = 0.0, 0.05           # faixa fisica de umidade especifica (kg/kg)
 
 
 def new_sigma(delta_sigma) -> tuple:
@@ -184,16 +194,82 @@ def surface_fix(t2, q2, p_in, p_out, t1, q1) -> tuple:
     return t2, q2
 
 
-def vert_sigma_inter(fields, p_in, p_out) -> dict:
+def _extrapolate_above_top(t2, q2, t1, q1, p_in, p_out):
+    """T isosterica e q decaindo para 0 acima do nivel mais alto da entrada.
+
+    'p_in' desce (superficie -> topo); p_out abaixo de p_in[-1] esta acima do
+    topo da analise. O decaimento de q usa z=-ln(p): q = q_topo*exp(-(z-z_topo)).
+    """
+    p_in = np.asarray(p_in, dtype=np.float64).ravel()
+    p_out = np.asarray(p_out, dtype=np.float64)
+    above = p_out < p_in[-1]
+    if not np.any(above):
+        return t2, q2
+    z = -np.log(p_out)
+    z_top = -np.log(p_in[-1])
+    decay = np.exp(-np.maximum(z - z_top, 0.0))
+    t2 = np.array(t2, dtype=np.float64, copy=True)
+    q2 = np.array(q2, dtype=np.float64, copy=True)
+    t2[above] = np.broadcast_to(t1[-1], t2.shape)[above]
+    q2[above] = np.broadcast_to(q1[-1], q2.shape)[above] * decay[above]
+    return t2, q2
+
+
+def clip_physical(t, q):
+    """Clip fisico de T [150,350] K e q [0,0.05] kg/kg; devolve (t, q, info).
+
+    info = {"t_clipped": n, "q_clipped": n, "t_min": ..., "t_max": ...,
+            "q_min": ..., "q_max": ...} com os valores ANTES do clip.
+    NaN/inf sao tratados como fora da faixa e substituidos pelos limites.
+    """
+    t = np.asarray(t, dtype=np.float64)
+    q = np.asarray(q, dtype=np.float64)
+    info = {"t_min": float(np.nanmin(t)) if t.size else 0.0,
+            "t_max": float(np.nanmax(t)) if t.size else 0.0,
+            "q_min": float(np.nanmin(q)) if q.size else 0.0,
+            "q_max": float(np.nanmax(q)) if q.size else 0.0}
+    t_bad = ~np.isfinite(t) | (t < T_MIN) | (t > T_MAX)
+    q_bad = ~np.isfinite(q) | (q < Q_MIN) | (q > Q_MAX)
+    info["t_clipped"] = int(np.count_nonzero(t_bad))
+    info["q_clipped"] = int(np.count_nonzero(q_bad))
+    if info["t_clipped"]:
+        with np.errstate(invalid="ignore"):
+            t = np.nan_to_num(t, nan=T_MIN, posinf=T_MAX, neginf=T_MIN)
+        t = np.clip(t, T_MIN, T_MAX)
+    if info["q_clipped"]:
+        with np.errstate(invalid="ignore"):
+            q = np.nan_to_num(q, nan=Q_MIN, posinf=Q_MAX, neginf=Q_MIN)
+        q = np.clip(q, Q_MIN, Q_MAX)
+    return t, q, info
+
+
+def vert_sigma_inter(fields, p_in, p_out, *, physical: bool = True) -> dict:
     """Interpola u, v, t, q para os niveis de saida e aplica a correcao de superficie.
 
     fields: {"u": (K, ...), "v": (K, ...), "t": (K, ...), "q": (K, ...)}
     p_out: (K2, ...) pressao dos niveis de saida em cada coluna.
+    physical=True (default) aplica o clip fisico de T/q e avisa quando clipar;
+    use physical=False para campos que nao sao T/q (ex.: divergencia/vorticidade,
+    que o pipeline passa temporariamente como "t"/"q").
     """
+    import warnings
+
     out = {name: interp_logp(fields[name], p_in, p_out) for name in ("u", "v")}
     t2 = interp_logp(fields["t"], p_in, p_out)
     q2 = interp_logp(fields["q"], p_in, p_out)
+    t2, q2 = _extrapolate_above_top(t2, q2, fields["t"], fields["q"], p_in, p_out)
     t2, q2 = surface_fix(t2, q2, p_in, p_out, fields["t"], fields["q"])
+    if physical:
+        t2, q2, info = clip_physical(t2, q2)
+        if info["t_clipped"] or info["q_clipped"]:
+            warnings.warn(
+                "interpolacao vertical: T clipado em %d ponto(s) (min=%.3g, "
+                "max=%.3g K) e q em %d ponto(s) (min=%.3g, max=%.3g kg/kg); "
+                "faixas fisicas T=[%g,%g], q=[%g,%g]"
+                % (info["t_clipped"], info["t_min"], info["t_max"],
+                   info["q_clipped"], info["q_min"], info["q_max"],
+                   T_MIN, T_MAX, Q_MIN, Q_MAX),
+                RuntimeWarning, stacklevel=2)
     out["t"] = t2
     out["q"] = q2
     return out

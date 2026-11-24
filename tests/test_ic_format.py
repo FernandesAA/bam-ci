@@ -67,3 +67,37 @@ def test_check_ic_detects_imaginary_zonal(tmp_path):
     path = write_ic(tmp_path / "bad.unf", header, **fields)
     problems = check_ic(path, mend=4)
     assert any("seno de m=0" in p for p in problems)
+
+
+def _ic_with_mean(path, mean_tvir, mean_q, mend=6, kmax=2):
+    """IC sintetica com medias prescritas de Tvir/q (coef (0,0) = sqrt2*media)."""
+    n = n_coeffs(mend)
+    header = ICHeader(a_hybr=np.zeros(kmax + 1), b_hybr=np.linspace(1, 0, kmax + 1))
+    tvir = np.zeros((n, kmax))
+    tvir[0, :] = np.sqrt(2.0) * mean_tvir
+    sphu = np.zeros((n, kmax))
+    sphu[0, :] = np.sqrt(2.0) * mean_q
+    lnps = np.zeros(n)
+    lnps[0] = np.sqrt(2.0) * np.log(100.0)
+    fields = dict(topo=np.zeros(n), lnps=lnps, tvir=tvir,
+                  divg=np.zeros((n, kmax)), vort=np.zeros((n, kmax)), sphu=sphu)
+    return write_ic(path, header, **fields)
+
+
+def test_check_ic_physical_limits(tmp_path):
+    bad = _ic_with_mean(tmp_path / "bad.unf", -20.0, -1e-3)
+    problems = check_ic(bad, mend=6)
+    assert any("tvir fora de [150,350] K" in p for p in problems)
+    assert any("q negativo" in p for p in problems)
+    # a mensagem de q negativo sugere o passo de positividade
+    assert any("--q-positivity" in p for p in problems)
+    # physical=False nao sintetiza a grade: nao reporta esses problemas
+    fast = check_ic(bad, mend=6, physical=False)
+    assert not any("tvir fora de [150,350] K" in p for p in fast)
+    assert not any("q negativo" in p for p in fast)
+
+    good = _ic_with_mean(tmp_path / "good.unf", 280.0, 0.01)
+    ok = check_ic(good, mend=6)
+    assert not any("tvir fora de [150,350] K" in p for p in ok)
+    assert not any("q negativo" in p for p in ok)
+

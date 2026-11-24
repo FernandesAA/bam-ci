@@ -61,6 +61,9 @@ class Config:
     smooth_fields: bool = True      # filtro de Hoskins nos coeficientes (producao usa)
     lon_shift: int = 0              # deslocamento inteiro em indices (medido: 0)
     lon_reverse: bool = True        # grade do modelo com longitudes decrescentes (medido contra a producao)
+    # positividade de q apos a truncagem espectral (ringing de Gibbs); 0 desliga.
+    # N iteracoes de c = analysis(max(synthesis(c), 0)) + garantia final.
+    q_positivity: int = 3
 
     # opcoes de saida
     grads: bool = False               # escreve tambem o .GrADS de diagnostico
@@ -158,6 +161,9 @@ class Config:
         problems: List[str] = []
         if len(self.date) != 10 or not self.date.isdigit():
             problems.append("date deve ser YYYYMMDDHH")
+        if int(self.q_positivity) < 0:
+            problems.append("q_positivity deve ser >= 0 (recebido %r)"
+                            % (self.q_positivity,))
         if self.grid not in ("Q", "L"):
             problems.append("grid deve ser Q ou L")
         if self.kmax_out <= 0 or self.mend_out <= 0:

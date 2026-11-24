@@ -114,7 +114,7 @@ def test_vert_sigma_inter_shapes_and_surface():
     delta = np.full(k2, 1.0 / k2)
     _, layers = new_sigma(delta)
     p_out = layers[:, None, None] * ps[None]
-    out = vert_sigma_inter(fields, p_in, p_out)
+    out = vert_sigma_inter(fields, p_in, p_out, physical=False)
     assert set(out) == set("uvtq")
     for name in out:
         assert out[name].shape == (k2, ny, nx)

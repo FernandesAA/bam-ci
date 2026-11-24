@@ -197,8 +197,16 @@ def read_ic(path: str | Path) -> Dict[str, object]:
                 tvir=tvir, divg=divg, vort=vort, sphu=sphu, kmax=kmax, ncoeff=ncoeff)
 
 
-def check_ic(path: str | Path, mend: int | None = None) -> List[str]:
-    """Checagens objetivas que o CheckICn do Fortran nao faz."""
+def check_ic(path: str | Path, mend: int | None = None, *,
+             physical: bool = True) -> List[str]:
+    """Checagens objetivas que o CheckICn do Fortran nao faz.
+
+    Com physical=True (default) sintetiza Tvir, q e lnps na grade e valida:
+    Tvir em [150, 350] K, q >= 0 kg/kg e lnps/ps finitos. E' o que detecta ICs
+    com extrapolacao vertical degenerada (ex.: Tvir -19 K, q -0.007) que passam
+    nas checagens puramente espectrais. A sintese custa O(kmax * mend^2 * nlat);
+    use physical=False para uma checagem rapida so do envelope/coeficientes.
+    """
     data = read_ic(path)
     problems: List[str] = []
     kmax = int(data["kmax"])
@@ -219,6 +227,63 @@ def check_ic(path: str | Path, mend: int | None = None) -> List[str]:
         if arr.ndim == 1:
             arr = arr[:, None]
         problems.extend(_check_zonal(name, arr, mend))
+    if physical:
+        problems.extend(_physical_grid_checks(data, mend))
+    return problems
+
+
+def _mend_from_ncoeff(ncoeff: int) -> int:
+    n = int(ncoeff)
+    m = int(round((-3.0 + np.sqrt(1.0 + 4.0 * n)) / 2.0))
+    if n_coeffs(m) != n:
+        raise ValueError("ncoeff=%d nao e' (mend+1)(mend+2)" % (n,))
+    return m
+
+
+def _physical_grid_checks(data: Dict[str, object], mend: int | None) -> List[str]:
+    """Valida Tvir/q/lnps na grade fisica (sintese espectral)."""
+    from .levels import grid_shape
+    from .spectral import from_file_order, synthesis
+
+    ncoeff = int(data["ncoeff"])
+    kmax = int(data["kmax"])
+    m = int(mend) if mend is not None else _mend_from_ncoeff(ncoeff)
+    if n_coeffs(m) != ncoeff:
+        return []          # tamanho errado ja foi reportado por check_ic
+    nlon, nlat = grid_shape(m)
+    problems: List[str] = []
+
+    bad_t: List[str] = []
+    bad_q: List[str] = []
+    for k in range(kmax):
+        tvir = synthesis(from_file_order(np.asarray(data["tvir"])[:, k], m), m, nlat, nlon)
+        tmin, tmax = float(np.nanmin(tvir)), float(np.nanmax(tvir))
+        if not np.all(np.isfinite(tvir)):
+            bad_t.append("nivel %d: nao finito" % (k + 1,))
+        elif tmin < 150.0 or tmax > 350.0:
+            bad_t.append("nivel %d: min=%.3f max=%.3f K" % (k + 1, tmin, tmax))
+        sphu = synthesis(from_file_order(np.asarray(data["sphu"])[:, k], m), m, nlat, nlon)
+        qmin = float(np.nanmin(sphu))
+        if not np.all(np.isfinite(sphu)):
+            bad_q.append("nivel %d: nao finito" % (k + 1,))
+        elif qmin < -1e-10:
+            bad_q.append("nivel %d: min=%.3g kg/kg" % (k + 1, qmin))
+    if bad_t:
+        problems.append("tvir fora de [150,350] K em %d nivel(is): %s"
+                        % (len(bad_t), "; ".join(bad_t[:3])))
+    if bad_q:
+        problems.append(
+            "q negativo em %d nivel(is): %s (se vier de ringing espectral, "
+            "gere a IC com 'bamci run --q-positivity 3')"
+            % (len(bad_q), "; ".join(bad_q[:3])))
+
+    lnps = synthesis(from_file_order(np.asarray(data["lnps"]), m), m, nlat, nlon)
+    with np.errstate(over="ignore", invalid="ignore"):
+        ps = 10.0 * np.exp(lnps)
+    if not np.all(np.isfinite(lnps)):
+        problems.append("lnps nao finito na grade")
+    elif not np.all(np.isfinite(ps)):
+        problems.append("ps=10*exp(lnps) nao finito na grade")
     return problems
 
 

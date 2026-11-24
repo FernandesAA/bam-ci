@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.4
+
+- **Extrapolacao acima do topo + clip fisico**: em L64 o topo fica em ~0.015 hPa, 5-6 camadas acima dos 1 hPa da ERA5; agora T e isosterica no topo e q decai a 0, com clip de T em [150,350] K e q >= 0. O `bamci check` passou a validar Tvir/q na grade e sai com 1 se estiverem fora da faixa. Corrige tvir de **-19 K para 231-311 K**.
+- **`bamci run --q-positivity N`** (default 3): recorte iterativo apenas na q na grade para eliminar o ringing espectral; minimo final **+1.0e-8 kg/kg** (antes **-2.25e-4** em 23 niveis) e lift constante minimo quando a iteracao nao converge. `--q-positivity 0` desliga.
+- **Sem essas correcoes o BAM morre no primeiro passo**: a IC com tvir negativo/q negativo e' fisicamente invalida. O caso T213L64 e' o alvo; o topo do L64 (0.015 hPa) contra 1 hPa da ERA5 e' a origem da extrapolacao degenerada.
 ## 1.2.3
 
 - **`--source-delta-sigma`** em `random`/`build`/`apply`: usa o `DeltaSigma.L028` real como coordenada de origem da Tabela 1, com `--delta-sigma` como alvo; em L64 sao **32 camadas** com origem uniforme contra **40 camadas** com a origem L028 real; o `meta` registra o caminho e os valores da origem.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bam-ci"
-version = "1.2.3"
+version = "1.2.4"
 description = "Pre-processamento do BAM 1.2 subsazonal em Python: analises GRIB (ERA5/FNL/GFS) -> condicao inicial espectral (TQDDD/LDD, qualquer truncacao) e SST semanal (OISST/RTG)"
 readme = "README.md"
 requires-python = ">=3.10"

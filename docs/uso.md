@@ -18,6 +18,11 @@ bamci run --case ERA5 --date 2026102300 -r TQ0126L042 \
 
 Saida: `GANLERA52026102300S.unf.TQ0126L042` (11.055.828 B).
 
+A IC passa por validacao fisica: `--q-positivity N` (default 3) recorta a
+umidade na grade para eliminar ringing espectral (minimo final +1e-8 kg/kg;
+`--q-positivity 0` desliga), e o `bamci check` sintetiza Tvir/q e retorna 1 se
+Tvir sair de [150,350] K ou q ficar negativo (`--no-physical` pula a checagem).
+
 O leitor GRIB e escolhido pelo `--case`:
 
 | caso | leitor | umidade no GRIB |

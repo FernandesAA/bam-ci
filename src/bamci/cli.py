@@ -70,7 +70,8 @@ def _cmd_check(args) -> int:
     for name in ("topo", "lnps", "tvir", "divg", "vort", "sphu"):
         arr = np.asarray(data[name])
         print("%-5s rms=%.4e max=%.4e" % (name, float(np.sqrt(np.mean(arr ** 2))), float(np.max(np.abs(arr)))))
-    problems = check_ic(args.file, mend=_mend_from_args(args))
+    problems = check_ic(args.file, mend=_mend_from_args(args),
+                        physical=not getattr(args, "no_physical", False))
     print("problemas:", problems if problems else "nenhum")
     return 0 if not problems else 1
 
@@ -151,6 +152,8 @@ def _cmd_run(args) -> int:
         cfg.smooth_fields = False
     if args.keep_lon:
         cfg.lon_reverse = False
+    if args.q_positivity is not None:
+        cfg.q_positivity = int(args.q_positivity)
 
     problems = cfg.check()
     if problems:
@@ -169,6 +172,15 @@ def _cmd_run(args) -> int:
     print("leitor   : %s" % (args.source or cfg.case))
     print("escrito  : %s" % result.path)
     print("tamanho  : %d bytes (esperado %d) %s" % (size, expected, "OK" if size == expected else "DIVERGE"))
+    qinfo = result.fields.get("q_positivity")
+    if qinfo:
+        if qinfo.get("min") is None:
+            print("q >= 0   : desligado (q_positivity=0)")
+        else:
+            print("q >= 0   : %d iteracao(oes) max (total %d), min na grade=%.3e kg/kg, "
+                  "%d nivel(is) com lift (max %.3e)"
+                  % (qinfo["iterations"], qinfo["iterations_total"],
+                     qinfo["min"], qinfo["levels_lifted"], qinfo["lift_max"]))
     return 0 if size == expected else 1
 
 
@@ -246,6 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--out-dir", default=None)
     p_run.add_argument("--output-name", default=None, help="template do nome de saida")
     p_run.add_argument("--no-smooth", action="store_true", help="desliga o filtro de Hoskins")
+    p_run.add_argument("--q-positivity", type=int, default=None,
+                       help="iteracoes de positividade de q (default 3; 0 desliga)")
     p_run.add_argument("--keep-lon", action="store_true", help="nao inverte as longitudes")
     p_run.set_defaults(func=_cmd_run)
 
@@ -254,6 +268,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_chk.add_argument("-r", "--resolution", default=None, help="ex.: TQ0213L64 (sobrescreve --mend)")
     p_chk.add_argument("--grid", default=None, choices=("Q", "L"))
     p_chk.add_argument("--mend", type=int, default=None)
+    p_chk.add_argument("--no-physical", action="store_true",
+                       help="pula a validacao fisica na grade (rapida, menos rigorosa)")
     p_chk.set_defaults(func=_cmd_check)
 
     p_cmp = sub.add_parser("compare", help="compara dois arquivos de IC")
