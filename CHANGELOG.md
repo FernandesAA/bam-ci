@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.2
+
+- **N parametrizado**: `N_PERTURBATIONS` impar (default 7) no shell, `--n-modes`
+  em `random`/`build`/`apply` no nucleo e na CLI; membros = `2N+1`.
+- **Perfil de Q duplo**: `artigo_l28` (default, Tabela 1 do artigo) e
+  `operacional_l42` (verbatim de `umipert_eof.nml`, zero acima da camada 17,
+  exige 42 niveis).
+- **`--remove-mean {yes,no}`** no build: default `yes`; o operacional usa `no`.
+- **Regioes por indice de grade**: `INDEX_REGIONS` para casar com o operacional
+  384x192 (`HN`, `TR`, `HS`, `NAS`, `SAS`); `NAS`/`SAS` diferem em latitude das
+  caixas `NSA`/`SSA` do artigo.
+- **Nomenclatura operacional de IC**: `--ic-naming operacional` grava
+  `GANLCTR<data>S...`, `GANL01P<data>S...`, `GANL01N<data>S...` (mantendo o
+  alias `GANLNMC...` que o modelo le).
+- **`PBS_STYLE {mpp,nodes,select}`**: `mpp` para `oensMB09`
+  (`mppwidth=48,mppnppn=4,mppdepth=6`), `nodes` para `bam_SeasonalClima`
+  (`nodes=12:ppn=4`) e `select` para PBS Pro (`select=12:ncpus=6:mpiprocs=4`).
+  Defaults do ensaio: fila `pesq`, 48 ranks, 6 threads, 2 h; previsoes longas
+  `workq`/23 h via `QUEUE_FCST`/`WALLTIME_FCST`.
+- **Default cientifico inalterado**: `q_profile=artigo_l28`, `remove_mean=yes`
+  e preset `etsa` continuam sendo o comportamento padrao.
+- **Testes**: 352 passed, 1 skipped.
 ## 1.2.1
 
 - **sdist**: passa a incluir `scripts/mb09.sh` (executavel), `containers/` e `DeltaSigma/`.

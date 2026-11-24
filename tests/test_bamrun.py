@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -111,6 +112,7 @@ def test_render_pbs_contem_aprun_nodes_walltime():
         ppn=40,
         omp_threads=10,
         env_source="/p/projetos/load_modules.bash",
+        pbs_style="nodes",
     )
     assert "#PBS -N bam-ctrl" in text
     assert "#PBS -q workq" in text
@@ -126,6 +128,40 @@ def test_render_pbs_contem_aprun_nodes_walltime():
         "aprun -m1000h -n 12 -N 4 -d 10 ./ParModel_MPI < MODELIN > print.out"
         in text
     )
+
+
+def test_render_pbs_operacional_mpp():
+    text = bamrun.render_pbs(
+        "bam-ens", "/w", "/w/e", "MODELIN",
+        queue="pesq", account="CPTEC", walltime="02:00:00",
+        omp_threads=6, ranks=48, ranks_per_node=4,
+        mppwidth=48, mppnppn=4, mppdepth=6,
+    )
+    assert "#PBS -q pesq" in text
+    assert "#PBS -A CPTEC" in text
+    assert "#PBS -l mppwidth=48,mppnppn=4,mppdepth=6" in text
+    assert "#PBS -l walltime=02:00:00" in text
+    assert "export OMP_NUM_THREADS=6" in text
+    assert "aprun -m1000h -n 48 -N 4 -d 6 ./ParModel_MPI" in text
+
+
+def test_render_pbs_estilos_mpp_nodes_select():
+    base = dict(ranks=48, ranks_per_node=4, omp_threads=6)
+
+    mpp = bamrun.render_pbs(
+        "x", "/w", "/w/e", "MODELIN", pbs_style="mpp",
+        mppwidth=48, mppnppn=4, mppdepth=6, **base,
+    )
+    assert "#PBS -l mppwidth=48,mppnppn=4,mppdepth=6" in mpp
+
+    nodes = bamrun.render_pbs("x", "/w", "/w/e", "MODELIN", pbs_style="nodes", **base)
+    assert "#PBS -l nodes=12:ppn=4" in nodes
+
+    select = bamrun.render_pbs("x", "/w", "/w/e", "MODELIN", pbs_style="select", **base)
+    assert "#PBS -l select=12:ncpus=6:mpiprocs=4" in select
+
+    with pytest.raises(ValueError):
+        bamrun.render_pbs("x", "/w", "/w/e", pbs_style="desconhecido")
 
 
 def test_render_pbs_aprun_args_customizado_e_validacao():
@@ -196,6 +232,53 @@ def test_link_inputs_dry_run_nao_cria(tmp_path):
     )
     assert not linked.ic.exists()
     assert not linked.sst.exists()
+
+
+def test_link_inputs_ic_naming_operacional(tmp_path):
+    suite = tmp_path / "suite"
+    datain = suite / "model" / "datain"
+    datain.mkdir(parents=True)
+    ic = tmp_path / "GANLERA52026110500S.unf.TQ0126L042"
+    sst = tmp_path / "SSTWeekly20261105.G00192"
+    ic.write_bytes(b"ic")
+    sst.write_bytes(b"sst")
+
+    plus = bamrun.link_inputs(
+        suite, ic, sst, "2026110500", mode="copy",
+        ic_naming="operacional", member=1, sign="+",
+    )
+    assert plus.ic.name == "GANL01P2026110500S.unf.TQ0126L042"
+    assert (datain / "GANLNMC2026110500S.unf.TQ0126L042").read_bytes() == b"ic"
+
+    minus = bamrun.link_inputs(
+        suite, ic, sst, "2026110500", mode="copy",
+        ic_naming="operacional", member=1, sign="-",
+    )
+    assert minus.ic.name == "GANL01N2026110500S.unf.TQ0126L042"
+
+    ctrl = bamrun.link_inputs(
+        suite, ic, sst, "2026110500", mode="copy",
+        ic_naming="operacional", control=True,
+    )
+    assert ctrl.ic.name == "GANLCTR2026110500S.unf.TQ0126L042"
+
+
+def test_stage_datain_ic_naming_operacional(tmp_path):
+    suite = tmp_path / "suite"
+    datain = suite / "model" / "datain"
+    datain.mkdir(parents=True)
+    ic = tmp_path / "GANLMB09_001.unf.TQ0126L042"
+    sst = tmp_path / "SSTWeekly20261105.G00192"
+    ic.write_bytes(b"ic")
+    sst.write_bytes(b"sst")
+
+    staged = bamrun.stage_datain(
+        tmp_path / "staging", "m1", suite, ic, sst,
+        labeli="2026110500", mode="copy",
+        ic_naming="operacional", member=1, sign="+",
+    )
+    assert (staged / "GANL01P2026110500S.unf.TQ0126L042").read_bytes() == b"ic"
+    assert (staged / "GANLNMC2026110500S.unf.TQ0126L042").read_bytes() == b"ic"
 
 
 def test_stage_datain_espelha_estaticos(tmp_path):
@@ -354,3 +437,13 @@ def test_scripts_mb09_sh_sintaxe():
     script = Path(__file__).resolve().parents[1] / "scripts" / "mb09.sh"
     assert script.is_file()
     subprocess.run(["bash", "-n", str(script)], check=True)
+
+
+def test_scripts_mb09_sh_n_perturbations_par_falha():
+    script = Path(__file__).resolve().parents[1] / "scripts" / "mb09.sh"
+    env = dict(os.environ, N_PERTURBATIONS="4", DRY="1", DATE="2026110500")
+    proc = subprocess.run(
+        ["bash", str(script)], env=env, capture_output=True, text=True
+    )
+    assert proc.returncode != 0
+    assert "IMPAR" in proc.stderr

@@ -160,10 +160,10 @@ O ensaio MB09 implementa o metodo de perturbacao por EOF de
 [DOI 10.1175/2008MWR2581.1](https://doi.org/10.1175/2008MWR2581.1)). Para cada
 data de analise:
 
-1. gera 7 condicoes iniciais aleatorias em T, U, V, P e Q;
-2. integra as 7 + o controle por 36 h, com saida a cada 3 h;
+1. gera `N` condicoes iniciais aleatorias em T, U, V, P e Q (`N` **impar**, default 7);
+2. integra as `N` + o controle por 36 h, com saida a cada 3 h;
 3. descarta as 6 h iniciais e calcula EOFs de 6, 9, ..., 36 h (M=11);
-4. aplica 7 pares +/- sobre a analise de controle = **15 membros**.
+4. aplica `N` pares +/- sobre a analise de controle = **2N+1 membros** (15 com o default).
 
 O preset default e `etsa` (regioes NH, SH, TR, NSA, SSA; campos P, T, Q, U, V).
 A regiao e o perfil de umidade seguem o artigo; as escolhas nao especificadas
@@ -180,6 +180,8 @@ export WORK=$PWD/mb09_work
 export DATE=2026110500          # data da analise (YYYYMMDDHH)
 export LEAD_DAYS=30             # previsoes finais
 export PRESET=etsa              # oper | ext1 | trop | ext2 | etsa
+export N_PERTURBATIONS=7        # impar; membros = 2N+1
+export IC_NAMING=simple         # simple | operacional
 
 # entradas do pre-processamento
 export GRIB=DataAnl/era5.grib
@@ -194,10 +196,24 @@ DRY=1 scripts/mb09.sh --steps 0,1,2      # apenas um trecho
 DRY=0 scripts/mb09.sh
 ```
 
-`SUITE_ROOT` deve conter `model/datain`, `model/dataout`, `pos/exec` e o
-`MODELIN`; os caminhos podem ser sobrepostos com `MODELIN_TEMPLATE` e
-`POSTIN_TEMPLATE`. O script usa o `python` de `PYTHON` (default `python3`) e
-aceita `--date`, `--work`, `--skip-ic` e `--steps`.
+`N_PERTURBATIONS` tem de ser impar; o shell aborta com mensagem clara se for
+par. `--ic-naming operacional` pode ser passado na linha de comando (ou
+`IC_NAMING=operacional` no ambiente). `SUITE_ROOT` deve conter `model/datain`,
+`model/dataout`, `pos/exec` e o `MODELIN`; os caminhos podem ser sobrepostos
+com `MODELIN_TEMPLATE` e `POSTIN_TEMPLATE`. O script usa o `python` de
+`PYTHON` (default `python3`) e aceita `--date`, `--work`, `--skip-ic`,
+`--steps` e `--ic-naming`.
+
+### Nomenclatura das condicoes iniciais
+
+| `--ic-naming` | controle | membro `k` (k=1..N) + | membro `k` - |
+|---|---|---|---|
+| `simple` (default) | `GANLNMC<data>S.unf.<res>` | idem | idem |
+| `operacional` | `GANLCTR<data>S.unf.<res>` | `GANL{kk}P<data>S.unf.<res>` | `GANL{kk}N<data>S.unf.<res>` |
+
+Em `operacional`, `kk` tem dois digitos (`01`..`N`). O driver mantem tambem um
+alias `GANLNMC<data>S.unf.<res>` apontando para o IC do membro, porque e esse o
+nome que o modelo le.
 
 ### Passos do `scripts/mb09.sh`
 
@@ -206,40 +222,73 @@ aceita `--date`, `--work`, `--skip-ic` e `--steps`.
 | 0 | checagens de ambiente (binario do modelo, `aprun`, `qsub`, `python`) e criacao de `WORK` |
 | 1 | condicao inicial de controle com `bamci run` (ou `--skip-ic` se ja existe) |
 | 2 | SST semanal com `bamci sst` + link para `SSTMonthlyDirec<data>.G00<lat>` |
-| 3 | 7 ICs aleatorias com `bamci.mb09 random` |
-| 4 | submete controle + 7 previsoes de 36 h (`DHFCT=3`) e espera |
-| 5 | pos-processa as 8 saidas com `PostGrib` (`.unf` + `.ctl`) |
-| 6 | constroi os EOFs (`build`, janela 6-36 h) e escreve os 15 ICs (`apply`) |
-| 7 | submete as 15 previsoes ate `LEAD_DAYS` (`DHFCT=24`) e espera |
-| 8 | pos-processa as 15 e calcula media/espalhamento + metricas (`bamci.score`) |
+| 3 | `N` ICs aleatorias com `bamci.mb09 random --n-modes N` |
+| 4 | submete controle + `N` previsoes de 36 h (`DHFCT=3`) e espera |
+| 5 | pos-processa as `N+1` saidas com `PostGrib` (`.unf` + `.ctl`) |
+| 6 | constroi os EOFs (`build`) e escreve os `2N+1` ICs (`apply`) |
+| 7 | submete as `2N+1` previsoes ate `LEAD_DAYS` (`DHFCT=24`) e espera |
+| 8 | pos-processa as `2N+1` e calcula media/espalhamento + metricas (`bamci.score`) |
 
 O passo 9 apenas imprime o resumo e os caminhos. Cada membro usa um
-`datain.<membro>` e um `dirfNameOutput` proprio, entao os jobs de 36 h e as 15
-previsoes podem rodar simultaneamente.
+`datain.<membro>` e um `dirfNameOutput` proprio, entao os jobs de 36 h e as
+`2N+1` previsoes podem rodar simultaneamente.
+
+### Recursos PBS
+
+Os defaults do ensaio de perturbacao seguem o operacional `oensMB09_bam_xc50`
+e podem ser sobrepostos por variavel de ambiente:
+
+| parametro | default | variavel |
+|---|---|---|
+| fila | `pesq` | `QUEUE` |
+| account | `CPTEC` | `ACCOUNT` |
+| walltime | `02:00:00` | `WALLTIME` |
+| estilo do recurso | `mpp` | `PBS_STYLE` |
+| `mppwidth` | `48` | `MPPWIDTH` |
+| `mppnppn` | `4` | `MPPNPPN` |
+| `mppdepth` / OMP | `6` | `MPPDEPTH` / `OMP_THREADS` |
+| ranks MPI (`aprun -n -N -d`) | `48 / 4 / 6` | `RANKS` / `RANKS_PER_NODE` / `OMP_THREADS` |
+| previsoes longas | `workq` / `23:00:00` | `QUEUE_FCST` / `WALLTIME_FCST` |
+
+O `PBS_STYLE` escolhe a sintaxe do recurso e **precisa casar com o ambiente e
+com o `aprun`**:
+
+| PBS_STYLE | linha gerada | onde usar |
+|---|---|---|
+| `mpp` | `#PBS -l mppwidth=48,mppnppn=4,mppdepth=6` | suite `oensMB09_bam_xc50` (Moab/Torque) |
+| `nodes` | `#PBS -l nodes=12:ppn=4` | suite `bam_SeasonalClima` (Torque classico) |
+| `select` | `#PBS -l select=12:ncpus=6:mpiprocs=4` | PBS Pro da jaci (`select`/`ncpus`) |
+
+Em `nodes`/`select`, o numero de chunks vem de `NODES` (default calculado de
+`RANKS/RANKS_PER_NODE`). O `aprun` default continua
+`-n 48 -N 4 -d 6`; se mudar `RANKS`, `RANKS_PER_NODE` ou `OMP_THREADS`, ajuste
+os dois lados para nao pedir recurso e ranks incompativeis. As rodadas curtas
+de 36 h usam a fila `pesq` e `02:00:00`; as `2N+1` previsoes longas usam
+`QUEUE_FCST`/`WALLTIME_FCST` (default `workq` e `23:00:00`).
 
 ### Comandos avulsos
 
 O CLI do MB09 e um modulo (nao ha subcomando `bamci mb09`):
 
 ```bash
-# 7 ICs aleatorias
+# N ICs aleatorias (N impar)
 python -m bamci.mb09 random \
   --ic model/datain/GANLERA52026110500S.unf.TQ0126L042 \
-  --out-dir work/mb09/random --n 7 --seed 0 --preset etsa \
+  --out-dir work/mb09/random --n-modes 7 --seed 0 --preset etsa \
   --resolution TQ0126L042
 
-# EOFs a partir dos .ctl do PostGrib (controle + 7 membros)
+# EOFs a partir dos .ctl do PostGrib (controle + N membros)
 python -m bamci.mb09 build --work work/mb09 \
   --control work/post/ctrl/dataout/TQ0126L042/2026110500/GPOSNMC20261105002026110612C.unf.TQ0126L042.ctl \
   --members work/post/rand01/.../GPOSNMC...ctl ... \
-  --preset etsa --ps-units hpa --analysis-time 2026110500 \
+  --preset etsa --ps-units hpa --analysis-time 2026110500 --n-modes 7 \
   --out work/mb09/eof.npz
 
-# 15 ICs finais (controle + 7 pares +/-)
+# 2N+1 ICs finais (controle + N pares +/-)
 python -m bamci.mb09 apply --eof work/mb09/eof.npz \
   --ic model/datain/GANLERA52026110500S.unf.TQ0126L042 \
   --out-dir work/mb09/ic --preset etsa --resolution TQ0126L042 \
-  --prefix GANLMB09
+  --prefix GANLMB09 --n-modes 7
 
 # metricas do ensemble (PAC, RMSE, spread, BSS/REL/RES, PECA)
 python -m bamci.score --ens work/post/ens*/.../GPOSNMC...ctl \
@@ -253,9 +302,9 @@ O driver do modelo tambem tem CLI propria (`python -m bamci.bamrun`):
 
 ### Pre-requisitos
 
-- **jaci**: PBS Pro com fila `workq`, conta `CPTEC`, `aprun`, `qsub`/`qstat` e
-  o ambiente `load_modulei_intel_2022_oneapi_mpi.bash` (intel/2022, MPI,
-  NETCDF/PNETCDF/PIO);
+- **jaci**: PBS Pro com fila `pesq` (curtas) e `workq` (longas), conta `CPTEC`,
+  `aprun`, `qsub`/`qstat` e o ambiente
+  `load_modulei_intel_2022_oneapi_mpi.bash` (intel/2022, MPI, NETCDF/PNETCDF/PIO);
 - `SUITE_ROOT` da suite operacional do BAM 1.2 subsazonal e permissao de
   escrita em `SUITE_ROOT/model/datain` e `SUITE_ROOT/model/dataout`;
 - `MODELIN` e `POSTIN-GRIB` da suite (ou templates com os placeholders
@@ -265,8 +314,8 @@ O script **nao usa `rm -rf`**: arquivos descartados vao para `WORK/trash`.
 
 ### Aviso de frequencia de saida
 
-As 8 rodadas curtas usam **`DHFCT=3`** para produzir a janela de 6-36 h do
-MB09 (11 tempos). As 15 previsoes finais usam **`DHFCT=24`**, como o
+As `N+1` rodadas curtas usam **`DHFCT=3`** para produzir a janela de 6-36 h do
+MB09 (11 tempos). As `2N+1` previsoes finais usam **`DHFCT=24`**, como o
 operacional. O build seleciona explicitamente 6, 9, ..., 36 h; tempos extras
 no `.ctl` sao ignorados com aviso.
 

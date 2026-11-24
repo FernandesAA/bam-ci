@@ -160,7 +160,7 @@ def test_eofs_orthonormal_and_eigenvalues_sorted():
     rng = np.random.default_rng(5)
     coef = np.linspace(0.2, 1.0, mb.M_TIMES)
     diffs = {}
-    for member in (1, 2):
+    for member in (1, 2, 3):
         states = _time_series(
             rng.normal(size=(nlev, nlat, nlon)),
             np.abs(rng.normal(size=(nlev, nlat, nlon))) * 1e-4,
@@ -256,7 +256,8 @@ def test_write_ensemble_15_files(tmp_path):
         }
         states.append(mb09.perturbed_state(control, delta))
 
-    paths = mb09.write_ensemble(control_path, states, tmp_path / "ens", "tst")
+    paths = mb09.write_ensemble(control_path, states, tmp_path / "ens", "tst",
+                                q_profile="operacional_l42", remove_mean=False)
     assert len(paths) == mb.N_MEMBERS == 15
     assert [p.name for p in paths][:3] == ["tst_000.unf", "tst_001.unf", "tst_002.unf"]
     expected = control_path.stat().st_size
@@ -268,6 +269,8 @@ def test_write_ensemble_15_files(tmp_path):
     assert len(manifest["members"]) == 14
     assert manifest["members"][0]["sign"] == "+"
     assert manifest["members"][1]["sign"] == "-"
+    assert manifest["q_profile"] == "operacional_l42"
+    assert manifest["remove_mean"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -339,11 +342,15 @@ def test_save_load_eofs_roundtrip(tmp_path):
                         rng.normal(size=(nlev, nlat, nlon)),
                         lat, lon, coef)
     }
-    eofs = mb09.build_eofs(diffs, preset="trop")
+    eofs = mb09.build_eofs(diffs, preset="trop", remove_mean=False,
+                           q_profile="artigo_l28")
     path = mb09.save_eofs(tmp_path / "eof.npz", eofs)
     back = mb09.load_eofs(path)
     assert back["preset"] == eofs["preset"]
     assert back["n"] == eofs["n"] == 1
+    # as escolhas de build sobrevivem ao .npz
+    assert back["meta"]["remove_mean"] is False
+    assert back["meta"]["q_profile"] == "artigo_l28"
     np.testing.assert_allclose(back["lat"], lat)
     np.testing.assert_allclose(back["lon"], lon)
     for field in eofs["eof_fields"]:
@@ -547,10 +554,256 @@ def test_build_cli_warns_about_extra_times(tmp_path, capsys):
     out = tmp_path / "eof.npz"
     rc = mb09.main(["build", "--control", str(c_ctl),
                     "--members", *[str(p) for p in m_ctls],
-                    "--preset", "trop", "--out", str(out)])
+                    "--preset", "trop", "--n", "3", "--out", str(out)])
     text = capsys.readouterr().out
     assert rc == 0
     assert out.exists()
     assert "aviso:" in text and "3 tempo" in text
     assert "horas=6,9,12" in text
+
+
+# ---------------------------------------------------------------------------
+# extras: n (numero de perturbacoes) configuravel, impar, default 7
+# ---------------------------------------------------------------------------
+def test_random_deltas_n_list():
+    state = _state(nlat=8, nlon=16, nlev=2)
+    rng = np.random.default_rng(0)
+    single = mb09.random_deltas(state, rng)
+    assert isinstance(single, dict) and set(single) == {"u", "v", "t", "ps", "q"}
+    one = mb09.random_deltas(state, rng, n=1)
+    assert isinstance(one, list) and len(one) == 1
+    three = mb09.random_deltas(state, rng, n=3)
+    assert len(three) == 3
+    assert not np.allclose(three[0]["u"], three[1]["u"])
+    assert all(set(d) == {"u", "v", "t", "ps", "q"} for d in three)
+
+
+def test_n_must_be_odd_and_positive():
+    state = _state()
+    diffs = {1: [_state() for _ in range(mb.M_TIMES)]}
+    for bad in (0, -1, 2, 4, 6):
+        with pytest.raises(ValueError, match="n deve ser"):
+            mb09.random_deltas(state, np.random.default_rng(0), n=bad)
+    for bad in (0, 2, 4):
+        with pytest.raises(ValueError, match="n deve ser"):
+            mb09.build_eofs(diffs, preset="trop", n=bad)
+    eofs = mb09.build_eofs(diffs, preset="trop", n=1)
+    for bad in (0, 2, 4):
+        with pytest.raises(ValueError, match="n deve ser"):
+            mb09.apply_modes(_state(), eofs, preset="trop", n=bad)
+    with pytest.raises(ValueError, match="n deve ser"):
+        mb09.run_mb09("nao-existe.unf", [], "out", n=2)
+
+
+@pytest.mark.parametrize("n", [1, 3, 5, 9])
+def test_ensemble_size_for_n(tmp_path, n):
+    control_path = _make_ic(tmp_path, mend=6, kmax=3, style="hybrid")
+    control = mb09.State.from_ic_file(control_path)
+    rng = np.random.default_rng(100 + n)
+    shape = (control.nlev, control.nlat, control.nlon)
+    coef = np.linspace(0.1, 1.0, mb.M_TIMES)
+    diffs = {}
+    for k in range(1, n + 1):
+        diffs[k] = _time_series(
+            rng.normal(size=shape), 1e-4 * np.abs(rng.normal(size=shape)),
+            rng.normal(size=(control.nlat, control.nlon)),
+            rng.normal(size=shape), rng.normal(size=shape),
+            control.lat, control.lon, coef,
+        )
+    eofs = mb09.build_eofs(diffs, preset="trop", n=n)
+    assert eofs["n"] == n
+    states = mb09.apply_modes(control, eofs, preset="trop", n=n)
+    assert len(states) == 2 * n
+    for i in range(0, len(states), 2):
+        plus, minus = states[i], states[i + 1]
+        np.testing.assert_allclose(plus.t - control.t, -(minus.t - control.t), atol=1e-10)
+        np.testing.assert_allclose(plus.u - control.u, -(minus.u - control.u), atol=1e-10)
+        assert float(plus.q.min()) >= 0.0
+        assert float(minus.q.min()) >= 0.0
+
+    prefix = "ens%02d" % n
+    out_dir = tmp_path / ("ens%d" % n)
+    paths = mb09.write_ensemble(control_path, states, out_dir, prefix)
+    assert len(paths) == 2 * n + 1
+    assert paths[0].name == prefix + "_000.unf"
+    assert paths[-1].name == prefix + "_%03d.unf" % (2 * n)
+    expected = control_path.stat().st_size
+    assert all(p.stat().st_size == expected for p in paths)
+    manifest = json.loads((out_dir / "members.json").read_text())
+    assert manifest["n"] == n
+    assert manifest["n_members"] == 2 * n + 1
+    assert len(manifest["members"]) == 2 * n
+
+
+def test_n_truncates_members_and_apply():
+    nlat, nlon, nlev = 12, 24, 2
+    lat, lon = _grid(nlat, nlon)
+    rng = np.random.default_rng(33)
+    coef = np.linspace(0.1, 1.0, mb.M_TIMES)
+    shape = (nlev, nlat, nlon)
+    diffs = {}
+    for k in range(1, 6):                     # 5 membros disponiveis
+        diffs[k] = _time_series(
+            rng.normal(size=shape), np.abs(rng.normal(size=shape)) * 1e-4,
+            rng.normal(size=(nlat, nlon)),
+            rng.normal(size=shape), rng.normal(size=shape),
+            lat, lon, coef,
+        )
+    full = mb09.build_eofs(diffs, preset="trop", n=3)
+    ref = mb09.build_eofs({k: diffs[k] for k in (1, 2, 3)}, preset="trop", n=3)
+    assert full["n"] == 3
+    assert full["meta"]["n_available"] == 5 and full["meta"]["n_used"] == 3
+    for field in full["eof_fields"]:
+        for region in full["regions"]:
+            np.testing.assert_allclose(
+                full["members"][0][field][region].mode,
+                ref["members"][0][field][region].mode, atol=1e-12)
+    with pytest.raises(ValueError, match="membro"):
+        mb09.build_eofs(diffs, preset="trop", n=7)
+
+    control = _state(nlat, nlon, nlev)
+    e1 = mb09.apply_modes(control, full, preset="trop", n=1)
+    e3 = mb09.apply_modes(control, full, preset="trop", n=3)
+    assert len(e1) == 2 and len(e3) == 6
+    np.testing.assert_allclose(e1[0].t, e3[0].t)
+    np.testing.assert_allclose(e1[1].t, e3[1].t)
+    with pytest.raises(ValueError, match="pede mais"):
+        mb09.apply_modes(control, full, preset="trop", n=5)
+
+
+def test_build_from_files_n_truncates_and_warns(tmp_path, capsys):
+    ctl0 = _write_postgrib_case(tmp_path / "c", seed=1)
+    members = [_write_postgrib_case(tmp_path / ("m%d" % k), seed=10 + k)
+               for k in range(1, 6)]
+    out = tmp_path / "eof.npz"
+    rc = mb09.main(["build", "--control", str(ctl0),
+                    "--members", *[str(p) for p in members],
+                    "--preset", "trop", "--n", "3", "--out", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0
+    assert "aviso:" in text and "usando os 3 primeiros" in text
+    assert mb09.load_eofs(out)["n"] == 3
+
+    # n maior que o numero de membros: erro (main devolve 1)
+    rc = mb09.main(["build", "--control", str(ctl0),
+                    "--members", *[str(p) for p in members[:3]],
+                    "--preset", "trop", "--n", "5",
+                    "--out", str(tmp_path / "e2.npz")])
+    assert rc == 1
+
+
+def test_cli_random_n_modes(tmp_path):
+    control_path = _make_ic(tmp_path, mend=6, kmax=3, style="hybrid")
+    rc = mb09.main(["random", "--ic", str(control_path),
+                    "--out-dir", str(tmp_path / "r"), "--n", "3", "--seed", "1"])
+    assert rc == 0
+    files = sorted((tmp_path / "r").glob("mb09rand_*.unf"))
+    assert len(files) == 3
+    manifest = json.loads((tmp_path / "r" / "random.json").read_text())
+    assert manifest["n"] == 3 and len(manifest["members"]) == 3
+
+    rc = mb09.main(["random", "--ic", str(control_path),
+                    "--out-dir", str(tmp_path / "r2"), "--n", "4"])
+    assert rc == 1
+    assert not list((tmp_path / "r2").glob("*.unf"))
+
+
+# ---------------------------------------------------------------------------
+# extras: remove_mean e q_profile (flags do operacional)
+# ---------------------------------------------------------------------------
+def test_remove_mean_changes_eof_and_meta():
+    nlat, nlon, nlev = 12, 24, 2
+    lat, lon = _grid(nlat, nlon)
+    rng = np.random.default_rng(77)
+    pat_var = rng.normal(size=(nlev, nlat, nlon))
+    pat_mean = rng.normal(size=(nlev, nlat, nlon))
+    coef = np.linspace(0.2, 1.0, mb.M_TIMES)
+    states = []
+    for a in coef:
+        t = a * pat_var + 3.0 * pat_mean       # media temporal nao nula
+        states.append(mb09.State(
+            t=t, q=np.full_like(t, 1e-2), u=np.zeros_like(t), v=np.zeros_like(t),
+            ps=np.full((nlat, nlon), 1000.0), lat=lat, lon=lon))
+    diffs = {1: {"T": states}}
+
+    yes = mb09.build_eofs(diffs, preset="oper", n=1, remove_mean=True)
+    no = mb09.build_eofs(diffs, preset="oper", n=1, remove_mean=False)
+    assert yes["meta"]["remove_mean"] is True
+    assert no["meta"]["remove_mean"] is False
+    assert yes["meta"]["q_profile"] == mb09.DEFAULT_Q_PROFILE
+
+    mask = _mask(lat, lon, "ETR")
+    my = yes["members"][0]["T"]["ETR"].mode
+    mn = no["members"][0]["T"]["ETR"].mode
+    corr = np.corrcoef(my[:, mask].ravel(), pat_var[:, mask].ravel())[0, 1]
+    assert abs(corr) > 0.99                     # EOF classico = parte variavel
+    assert not np.allclose(my, mn, atol=1e-3)   # sem remover a media difere
+    assert abs(np.corrcoef(my[:, mask].ravel(), mn[:, mask].ravel())[0, 1]) < 0.9
+
+
+def test_q_profile_validation_and_cli_meta(tmp_path, capsys):
+    state = _state()
+    with pytest.raises(ValueError, match="q_profile"):
+        mb09.random_deltas(state, np.random.default_rng(0), q_profile="invalido")
+    diffs = {1: [_state() for _ in range(mb.M_TIMES)]}
+    with pytest.raises(ValueError, match="q_profile"):
+        mb09.build_eofs(diffs, preset="trop", q_profile="invalido")
+    eofs = mb09.build_eofs(diffs, preset="trop", n=1)
+    with pytest.raises(ValueError, match="q_profile"):
+        mb09.apply_modes(state, eofs, preset="trop", q_profile="invalido")
+    # o perfil operacional exige 42 camadas na hora de calcular sigma_f
+    with pytest.raises(ValueError, match="42"):
+        mb09.apply_modes(state, eofs, preset="trop", q_profile="operacional_l42")
+
+    # CLI build registra e persiste as duas escolhas no eof.npz
+    ctl0 = _write_postgrib_case(tmp_path / "c", seed=1)
+    members = [_write_postgrib_case(tmp_path / ("m%d" % k), seed=10 + k)
+               for k in range(1, 4)]
+    out = tmp_path / "eof.npz"
+    rc = mb09.main(["build", "--control", str(ctl0),
+                    "--members", *[str(p) for p in members],
+                    "--preset", "trop", "--n", "3",
+                    "--remove-mean", "no",
+                    "--q-profile", "operacional_l42",
+                    "--out", str(out)])
+    text = capsys.readouterr().out
+    assert rc == 0
+    assert "remove_mean=no" in text
+    assert "q_profile=operacional_l42" in text
+    saved = mb09.load_eofs(out)
+    assert saved["meta"]["remove_mean"] is False
+    assert saved["meta"]["q_profile"] == "operacional_l42"
+
+
+def test_operacional_l42_zeroes_upper_q():
+    nlat, nlon, nlev = 4, 8, 42
+    control = _state(nlat, nlon, nlev)
+    rng = np.random.default_rng(8)
+    shape = (nlev, nlat, nlon)
+    coef = np.linspace(0.1, 1.0, mb.M_TIMES)
+    diffs = {1: _time_series(
+        rng.normal(size=shape), np.abs(rng.normal(size=shape)) * 1e-4,
+        rng.normal(size=(nlat, nlon)),
+        rng.normal(size=shape), rng.normal(size=shape),
+        control.lat, control.lon, coef)}
+
+    eofs = mb09.build_eofs(diffs, preset="trop", n=1,
+                           q_profile="operacional_l42")
+    assert eofs["meta"]["q_profile"] == "operacional_l42"
+    states = mb09.apply_modes(control, eofs, preset="trop", n=1)
+    dq = states[0].q - control.q
+    # camadas 18..42 (1-based, indices 17..41) ficam com sigma_f = 0
+    assert np.all(dq[17:] == 0.0)
+    assert np.any(dq[:17] != 0.0)
+    # o perfil vem de eofs["meta"] quando nao e' passado
+    states2 = mb09.apply_modes(control, eofs, preset="trop", n=1)
+    np.testing.assert_allclose(states2[0].q, states[0].q)
+    # override explicito coincide; o random tambem usa o perfil operacional
+    states3 = mb09.apply_modes(control, eofs, preset="trop", n=1,
+                               q_profile="operacional_l42")
+    np.testing.assert_allclose(states3[0].q, states[0].q)
+    delta = mb09.random_deltas(control, np.random.default_rng(1),
+                               q_profile="operacional_l42")
+    assert np.all(delta["q"][17:] == 0.0)
+    assert np.any(delta["q"][:17] != 0.0)
 

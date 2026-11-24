@@ -11,38 +11,52 @@ State
     Estado em grade (t, q, u, v, ps, topo) com:
       * 'State.from_ic_file(path)'      -> State  (le um IC espectral do BAM)
       * 'state.to_ic_file(out, template=None)' -> Path (grava um IC espectral)
-random_deltas(state, rng, sigma=None) -> dict
+random_deltas(state, rng, sigma=None, *, n=None, q_profile="artigo_l28")
+    -> dict | list[dict]
     Perturbacoes aleatorias gaussianas de media zero (vento 3.0 m/s, T 0.6 K,
     ps 1.0 hPa, q = Tabela 1 por camada). Unidades do Estado (ps em hPa).
+    Sem n: um dict; com n (impar, >=1): lista de n dicts. 'q_profile' escolhe
+    a tabela de q (artigo_l28 default; operacional_l42 exige 42 niveis).
 perturbed_state(state, delta) -> State
     Soma o delta ao estado e clipa q em 0.
-build_eofs(diffs, preset="etsa", weights=None, *, keep_basis=False) -> dict
+build_eofs(diffs, preset="etsa", weights=None, *, n=None, keep_basis=False,
+          remove_mean=True, q_profile="artigo_l28") -> dict
     'diffs' = {membro: {campo: [State x M]}} (ou {membro: [State x M]}), com
     'campo' em {"P","T","Q","U","V"}; U/V sao combinados em vento complexo
-    u+iv. Devolve os modos (1o autovetor) por membro/campo/regiao + autovalores
-    + sigma_i, prontos para 'apply_modes'.
-apply_modes(control, eofs, preset="etsa", sigma=None) -> list[State]
+    u+iv. n (impar) usa os n primeiros membros; None usa todos. 'remove_mean'
+    (default True = EOF classico D2; False = operacional, G = (1/M) X X^H
+    direto) e 'q_profile' sao registrados em eofs["meta"]. Devolve os modos
+    (1o autovetor) por membro/campo/regiao + autovalores + sigma_i, prontos
+    para 'apply_modes'.
+apply_modes(control, eofs, preset="etsa", sigma=None, *, n=None,
+            q_profile=None) -> list[State]
     2n estados na ordem 2k-1 = x_c + p_k (indice 2k-2) e 2k = x_c - p_k
-    (indice 2k-1), k = 1..n.
+    (indice 2k-1), k = 1..n. n (impar) usa os n primeiros modos; None usa todos.
+    q_profile None usa o gravado em eofs["meta"].
 write_ensemble(control_path, states, out_dir, prefix) -> list[Path]
-    Grava o controle + os 2n estados (15 arquivos) e 'members.json'.
-run_mb09(control_ic, member_ics, out_dir, preset, seed) -> list[Path]
+    Grava o controle + os 2n estados (2n+1 arquivos) e 'members.json' (com n e
+    n_members).
+run_mb09(control_ic, member_ics, out_dir, preset, seed, *, n=7,
+         remove_mean=True, q_profile="artigo_l28") -> list[Path]
     Build + apply em um comando, quando as series de previsao ja existem.
 
 Convencoes e decisoes de implementacao (o artigo NAO especifica; ver D1..D10 em
 docs/mb09.md):
 
 * X tem forma (M, N) por campo/regiao, com N = n_pontos_da_regiao * n_niveis
-  (niveis empilhados, D5). A media temporal e removida de X (D2). Sem pesos de
-  area por padrao (D3; 'weights' fica como opcao explicita).
+  (niveis empilhados, D5). A media temporal e removida de X por default (D2);
+  remove_mean=False usa G = (1/M) X X^H direto, como o operacional. Sem pesos
+  de area por padrao (D3; 'weights' fica como opcao explicita).
 * truque dual: G = (1/M) X X^H e' (M, M) = 11x11; autovalores/autovetores de G
   e EOF = X^H u normalizado. Nunca se forma N x N.
 * vento e' complexo u + i v (G hermitiana). Para o vento, 'sigma_i' e' o desvio
   padrao do campo complexo na regiao (equivale ao RMS do modulo depois de
   remover a media espacial) e o alvo 5.0 m/s e' interpretado nessa mesma norma
   (RMS do vento vetorial). O artigo nao define sigma_i para o vento.
-* Q: reescala POR CAMADA (Tabela 1), como em docs/mb09.md; os demais campos usam
-  um fator ESCALAR por campo/regiao.
+* Q: reescala POR CAMADA, como em docs/mb09.md; q_profile='artigo_l28'
+  (default) ou 'operacional_l42' escolhe a tabela (esta ultima exige 42
+  camadas e zera q nas camadas 18..42). Os demais campos usam um fator
+  ESCALAR por campo/regiao.
 * regioes sobrepostas (ETSA) somam de forma aditiva, sem renormalizar (D9).
 * P: o Estado guarda ps em hPa; o IC guarda ln(ps/10) e a conversao e'
   d ln(ps/10) = d ps / ps (D6). T: perturbacao aplicada em Tv (D7), que e' o
@@ -105,6 +119,10 @@ __all__ = [
 
 _FIELD_ATTR = {"P": "ps", "T": "t", "Q": "q", "U": "u", "V": "v"}
 _EOF_FIELDS = ("P", "T", "Q", "wind")
+
+#: Perfis de desvio-padrao de q aceitos (ver mb09_tables.q_stddev_for_layers).
+Q_PROFILES: Tuple[str, ...] = tuple(mb.Q_PROFILES.keys())
+DEFAULT_Q_PROFILE = mb.Q_PROFILE_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -433,20 +451,50 @@ def _sigma_entry(key: str) -> str:
     return _SIGMA_ALIASES[k]
 
 
-def random_deltas(state: State, rng, sigma: Optional[Mapping[str, object]] = None) -> dict:
-    """Perturbacoes aleatorias gaussianas de media zero (passo 1 do MB09).
+def _check_n(n) -> int:
+    """Valida o numero de perturbacoes: inteiro IMPAR >= 1 (default 7).
 
-    Defaults (p. 1441-1442): vento 3.0 m/s (u e v independentes), T 0.6 K,
-    ps 1.0 hPa e q com o perfil da Tabela 1 por camada sigma. 'sigma' permite
-    sobrescrever por campo (chaves u, v, wind, t, ps, q); o valor de q pode ser
-    escalar ou um vetor de nlev valores.
-
-    Retorna dict com 'u','v','t','ps','q' nas unidades do State (ps em hPa).
+    O ensemble e' x_c +/- p_k (2n estados) + controle; n e' mantido impar por
+    requisito do metodo (pares +/-, ver docs/mb09.md).
     """
-    if not isinstance(rng, np.random.Generator):
-        rng = np.random.default_rng(rng)
+    try:
+        value = int(n)
+    except (TypeError, ValueError):
+        raise ValueError("n deve ser inteiro impar >= 1 (recebido %r)" % (n,)) from None
+    if value != n:
+        raise ValueError("n deve ser inteiro impar >= 1 (recebido %r)" % (n,))
+    if value < 1:
+        raise ValueError("n deve ser impar e >= 1 (recebido %r)" % (n,))
+    if value % 2 == 0:
+        raise ValueError(
+            "n deve ser impar (pares +/- exigem 2n estados simetricos); recebido %r"
+            % (n,))
+    return value
+
+
+def _validate_q_profile(profile) -> str:
+    """Valida o nome do perfil de q (default artigo_l28)."""
+    p = DEFAULT_Q_PROFILE if profile is None else str(profile)
+    if p not in Q_PROFILES:
+        raise ValueError(
+            "q_profile invalido: %r (use %s)" % (profile, ", ".join(Q_PROFILES)))
+    return p
+
+
+def _q_profile_values(nlev: int, profile=DEFAULT_Q_PROFILE) -> np.ndarray:
+    """Perfil sigma_f de q (kg/kg) para nlev camadas.
+
+    Repassa 'profile' para mb09_tables.q_stddev_for_layers(..., profile=...).
+    'operacional_l42' exige nlev=42 (a propria tabela da o erro).
+    """
+    p = _validate_q_profile(profile)
+    return np.asarray(mb.q_stddev_for_layers(nlev, profile=p), dtype=np.float64)
+
+
+def _random_delta_once(state: State, rng, sigma, q_profile=DEFAULT_Q_PROFILE) -> dict:
+    """Uma realizacao das perturbacoes aleatorias gaussianas (passo 1)."""
     sig = {"u": 3.0, "v": 3.0, "t": 0.6, "ps": 1.0}
-    qprof = np.asarray(mb.q_stddev_for_layers(state.nlev), dtype=np.float64)
+    qprof = _q_profile_values(state.nlev, q_profile)
 
     if sigma:
         for key, value in sigma.items():
@@ -469,6 +517,30 @@ def random_deltas(state: State, rng, sigma: Optional[Mapping[str, object]] = Non
         "ps": rng.normal(0.0, sig["ps"], state.ps.shape),
         "q": rng.normal(0.0, qprof[:, None, None], state.q.shape),
     }
+
+
+def random_deltas(state: State, rng, sigma: Optional[Mapping[str, object]] = None,
+                  *, n: Optional[int] = None,
+                  q_profile: str = DEFAULT_Q_PROFILE):
+    """Perturbacoes aleatorias gaussianas de media zero (passo 1 do MB09).
+
+    Defaults (p. 1441-1442): vento 3.0 m/s (u e v independentes), T 0.6 K,
+    ps 1.0 hPa e q com o perfil da Tabela 1 por camada sigma. 'sigma' permite
+    sobrescrever por campo (chaves u, v, wind, t, ps, q); o valor de q pode ser
+    escalar ou um vetor de nlev valores.
+
+    Sem 'n' retorna UM dict com 'u','v','t','ps','q' (unidades do State, ps em
+    hPa). Com 'n' (impar, >= 1) retorna uma LISTA com n dicts independentes.
+    'q_profile' escolhe a tabela de sigma de q (artigo_l28 default,
+    operacional_l42).
+    """
+    _validate_q_profile(q_profile)
+    if not isinstance(rng, np.random.Generator):
+        rng = np.random.default_rng(rng)
+    if n is None:
+        return _random_delta_once(state, rng, sigma, q_profile=q_profile)
+    n = _check_n(n)
+    return [_random_delta_once(state, rng, sigma, q_profile=q_profile) for _ in range(n)]
 
 
 _DELTA_ALIASES = {"tvir": "t", "p": "ps", "sphu": "q"}
@@ -546,15 +618,17 @@ def _fix_phase(mode: np.ndarray) -> np.ndarray:
     return mode
 
 
-def _eof_first(X: np.ndarray, weights=None, keep_basis: bool = False):
+def _eof_first(X: np.ndarray, weights=None, keep_basis: bool = False,
+               remove_mean: bool = True):
     """EOF dominante pelo truque dual: G = (1/M) X X^H (M x M).
 
-    X: (M, N) real ou complexo; media temporal removida aqui. 'weights' e' um
-    vetor (N,) de pesos metricos opcionais (aplica sqrt(w) em X e desfaz no
+    X: (M, N) real ou complexo. 'remove_mean' controla a remocao da media
+    temporal (EOF classico, D2) -- o operacional usa X^T X direto. 'weights' e'
+    um vetor (N,) de pesos metricos opcionais (aplica sqrt(w) em X e desfaz no
     modo). Devolve (modo normalizado, autovalores decrescentes, base ou None).
     """
     M = X.shape[0]
-    Xc = X - X.mean(axis=0, keepdims=True)
+    Xc = X - X.mean(axis=0, keepdims=True) if remove_mean else X
     if weights is not None:
         w = np.asarray(weights, dtype=np.float64).ravel()
         if w.size != X.shape[1]:
@@ -641,7 +715,8 @@ def _sigma_i_for(mode_grid: np.ndarray, field: str, mask: np.ndarray) -> np.ndar
     return np.asarray([[float(np.std(values))]], dtype=np.float64)
 
 
-def _field_modes(array: np.ndarray, field: str, regions, lat, lon, weights, keep_basis):
+def _field_modes(array: np.ndarray, field: str, regions, lat, lon, weights, keep_basis,
+                 remove_mean: bool = True):
     if np.ndim(array) != 4:
         raise ValueError("campo %r deve ter forma (M, nlev, nlat, nlon); recebido %s"
                          % (field, np.shape(array)))
@@ -662,7 +737,7 @@ def _field_modes(array: np.ndarray, field: str, regions, lat, lon, weights, keep
         for t in range(M):
             X[t] = array[t][:, mask].reshape(-1)
         wflat = None if w is None else w[:, mask].reshape(-1)
-        mode, evals, basis = _eof_first(X, wflat, keep_basis)
+        mode, evals, basis = _eof_first(X, wflat, keep_basis, remove_mean=remove_mean)
         mode_grid = np.zeros((K, nlat, nlon), dtype=array.dtype)
         mode_grid[:, mask] = mode.reshape(K, npts)
         out[region] = Mode(
@@ -672,21 +747,24 @@ def _field_modes(array: np.ndarray, field: str, regions, lat, lon, weights, keep
     return out
 
 
-def _member_modes(arrays: Mapping[str, np.ndarray], preset, lat, lon, weights, keep_basis):
+def _member_modes(arrays: Mapping[str, np.ndarray], preset, lat, lon, weights, keep_basis,
+                  remove_mean: bool = True):
     regions, fields = mb.preset(preset)
     out = {}
     for f in ("P", "T", "Q"):
         if f in fields and f in arrays:
-            out[f] = _field_modes(arrays[f], f, regions, lat, lon, weights, keep_basis)
+            out[f] = _field_modes(arrays[f], f, regions, lat, lon, weights, keep_basis,
+                                  remove_mean)
     if ("U" in fields or "V" in fields) and "wind" in arrays:
-        out["wind"] = _field_modes(arrays["wind"], "wind", regions, lat, lon, weights, keep_basis)
+        out["wind"] = _field_modes(arrays["wind"], "wind", regions, lat, lon, weights,
+                                   keep_basis, remove_mean)
     if not out:
         raise ValueError("nenhum campo do preset %r presente em diffs" % (preset,))
     return out
 
 
 def _assemble_eofs(array_iter: Iterable[Mapping[str, np.ndarray]], preset, lat, lon,
-                   weights, keep_basis, source=None) -> dict:
+                   weights, keep_basis, source=None, remove_mean: bool = True) -> dict:
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
     members = []
@@ -703,7 +781,8 @@ def _assemble_eofs(array_iter: Iterable[Mapping[str, np.ndarray]], preset, lat, 
                 raise ValueError(
                     "membro com %r de forma %s; esperado (M=%d, nlev=%d, nlat, nlon)"
                     % (field, np.shape(arr), m_times, expected_k))
-        members.append(_member_modes(arrays, preset, lat, lon, weights, keep_basis))
+        members.append(_member_modes(arrays, preset, lat, lon, weights, keep_basis,
+                                      remove_mean))
     if not members:
         raise ValueError("nenhum membro em diffs")
     if m_times is None or m_times < 2:
@@ -740,7 +819,9 @@ def _first_state(member) -> State:
 
 
 def build_eofs(diffs, preset: str = mb.DEFAULT_PRESET, weights=None,
-               *, keep_basis: bool = False) -> dict:
+               *, n: Optional[int] = None, keep_basis: bool = False,
+               remove_mean: bool = True,
+               q_profile: str = DEFAULT_Q_PROFILE) -> dict:
     """Calcula o 1o EOF por membro/campo/regiao a partir das series de diferencas.
 
     Parameters
@@ -755,17 +836,39 @@ def build_eofs(diffs, preset: str = mb.DEFAULT_PRESET, weights=None,
     weights:
         None (default, sem pesos, D3) ou array de pesos metricos broadcastable
         para (nlev, nlat, nlon); dict por campo tambem e' aceito.
+    n:
+        numero de perturbacoes (impar, >= 1). None = usa todos os membros de
+        'diffs' (que tambem precisa ser impar). Se n for menor que o numero de
+        membros fornecidos, usa os n primeiros; se for maior, erro.
     keep_basis:
         guarda tambem a matriz de autovetores (M, M) em Mode.eigenvectors.
+    remove_mean:
+        True (default) remove a media temporal de X antes de G (EOF classico,
+        D2). False reproduz o operacional (X^H X direto). Registrado em meta.
+    q_profile:
+        'artigo_l28' (default) ou 'operacional_l42'; repassado para
+        mb09_tables.q_stddev_for_layers(profile=...). Registrado em meta.
 
     Returns
     -------
     dict com preset, regions, fields, eof_fields, n, m_times, kmax, nlat, nlon,
-    lat, lon e 'members' (lista de {campo: {regiao: Mode}}).
+    lat, lon e 'members' (lista de {campo: {regiao: Mode}}). meta traz
+    n_requested/n_available/n_used/remove_mean/q_profile.
     """
+    _validate_q_profile(q_profile)
     keys = list(diffs.keys())
     if not keys:
         raise ValueError("diffs vazio")
+    available = len(keys)
+    if n is None:
+        n_used = _check_n(available)
+    else:
+        n_used = _check_n(n)
+        if available < n_used:
+            raise ValueError(
+                "pediram n=%d mas 'diffs' tem %d membro(s); forneca ao menos n"
+                % (n_used, available))
+        keys = keys[:n_used]
     first = _first_state(diffs[keys[0]])
     lat, lon = first.lat.copy(), first.lon.copy()
     for key in keys:
@@ -781,18 +884,28 @@ def build_eofs(diffs, preset: str = mb.DEFAULT_PRESET, weights=None,
         for key in keys:
             yield _member_arrays(diffs[key])
 
-    return _assemble_eofs(gen(), preset, lat, lon, weights, keep_basis)
+    eofs = _assemble_eofs(gen(), preset, lat, lon, weights, keep_basis,
+                          remove_mean=remove_mean)
+    eofs["meta"].update({
+        "n_requested": None if n is None else n_used,
+        "n_available": available,
+        "n_used": n_used,
+        "remove_mean": bool(remove_mean),
+        "q_profile": _validate_q_profile(q_profile),
+    })
+    return eofs
 
 
 # ---------------------------------------------------------------------------
 # aplicacao dos modos
 # ---------------------------------------------------------------------------
-def _targets(nlev: int, sigma=None) -> Dict[str, np.ndarray]:
+def _targets(nlev: int, sigma=None,
+             q_profile=DEFAULT_Q_PROFILE) -> Dict[str, np.ndarray]:
     target = {
         "P": float(mb.AMPLITUDES_TARGET["P"]),
         "T": float(mb.AMPLITUDES_TARGET["T"]),
         "wind": float(mb.AMPLITUDES_TARGET["wind"]),
-        "Q": np.asarray(mb.q_stddev_for_layers(nlev), dtype=np.float64),
+        "Q": _q_profile_values(nlev, q_profile),
     }
     if sigma:
         for key, value in sigma.items():
@@ -848,12 +961,16 @@ def _align_mode(mode: np.ndarray, eof_lat, eof_lon, lat, lon) -> np.ndarray:
 
 
 def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEFAULT_PRESET,
-                sigma=None) -> List[State]:
+                sigma=None, *, n: Optional[int] = None,
+                q_profile: Optional[str] = None) -> List[State]:
     """Gera os 2n estados x_c +/- p_k, na ordem +p_1, -p_1, ..., +p_n, -p_n.
 
     'preset' serve para validar que o eofs foi construido com o mesmo preset;
     None (ou o default ETSA) usa o preset gravado em 'eofs'. 'sigma' sobrescreve
     as amplitudes alvo (chaves wind, t, ps, q; q aceita vetor por camada).
+    'n' (impar, >= 1) usa os n primeiros modos do eofs; None usa todos. Pedir
+    mais modos do que existem no eofs e' erro. 'q_profile' (artigo_l28 default,
+    operacional_l42); None usa o perfil gravado em eofs["meta"].
     """
     eof_preset = eofs.get("preset", preset)
     if preset is None or str(preset) == eof_preset:
@@ -864,7 +981,19 @@ def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEF
     else:
         raise ValueError("preset %r nao e' o do eofs (%r)" % (preset, eof_preset))
     members = eofs["members"]
-    targets = _targets(control.nlev, sigma)
+    if n is None:
+        n_used = _check_n(len(members))
+    else:
+        n_used = _check_n(n)
+        if len(members) < n_used:
+            raise ValueError(
+                "eofs tem %d modo(s); n=%d pede mais do que existe"
+                % (len(members), n_used))
+    members = members[:n_used]
+    if q_profile is None:
+        q_profile = eofs.get("meta", {}).get("q_profile", DEFAULT_Q_PROFILE)
+    q_profile = _validate_q_profile(q_profile)
+    targets = _targets(control.nlev, sigma, q_profile)
     lat = eofs["lat"]
     lon = eofs["lon"]
 
@@ -901,14 +1030,23 @@ def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEF
 # ---------------------------------------------------------------------------
 def write_ensemble(control_path: Union[str, Path], states: Sequence[State],
                    out_dir: Union[str, Path], prefix: str = "mb09", *,
-                   suffix: str = "") -> List[Path]:
-    """Grava controle + estados (15 arquivos no caso 2n=14) e members.json.
+                   suffix: str = "", q_profile: Optional[str] = None,
+                   remove_mean: Optional[bool] = None) -> List[Path]:
+    """Grava controle + 2n estados (2n+1 arquivos) e members.json.
 
     Nomes: '<prefix>_000.unf<suffix>' (controle, copia do arquivo original),
     '<prefix>_001.unf<suffix>' (+p_1), '_002' (-p_1), ... cada State e' gravado
-    com o cabecalho do IC de controle.
+    com o cabecalho do IC de controle. 'states' precisa ter 2n estados (n >= 1);
+    o members.json registra n, n_members e (quando informados) q_profile e
+    remove_mean.
     Retorna [controle, +p_1, -p_1, ..., +p_n, -p_n].
     """
+    if q_profile is not None:
+        q_profile = _validate_q_profile(q_profile)
+    if len(states) == 0 or len(states) % 2:
+        raise ValueError(
+            "write_ensemble espera 2n estados (n >= 1); recebido %d" % (len(states),))
+    n_modes = len(states) // 2
     control_path = Path(control_path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -931,10 +1069,16 @@ def write_ensemble(control_path: Union[str, Path], states: Sequence[State],
         members.append({"index": idx, "k": k, "sign": sign, "path": str(paths[idx])})
     manifest = {
         "control": str(paths[0]),
+        "n": n_modes,
+        "n_members": len(paths),
         "order": "000=controle; 2k-1=+p_k; 2k=-p_k",
         "files": [str(p) for p in paths],
         "members": members,
     }
+    if q_profile is not None:
+        manifest["q_profile"] = q_profile
+    if remove_mean is not None:
+        manifest["remove_mean"] = bool(remove_mean)
     (out_dir / "members.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return paths
@@ -965,36 +1109,50 @@ def _normalize_series(member_ics) -> Dict[str, list]:
 
 def run_mb09(control_ic: Union[str, Path], member_ics, out_dir: Union[str, Path],
              preset: str = mb.DEFAULT_PRESET, seed: int = 0, *,
-             prefix: str = "mb09", suffix: str = "", sigma=None) -> List[Path]:
+             n: int = mb.N_PERTURBATIONS, prefix: str = "mb09", suffix: str = "",
+             sigma=None, remove_mean: bool = True,
+             q_profile: str = DEFAULT_Q_PROFILE) -> List[Path]:
     """Build + apply a partir das series ja integradas.
 
     'control_ic' e' o IC da analise de controle (estado base a perturbar).
     'member_ics' deve ser {"control": [M caminhos], "members": [[M caminhos] x n]}
     ou uma sequencia de n+1 series (controle primeiro). Cada serie tem M estados
-    em formato IC (State.from_ic_file). 'seed' e' apenas proveniencia aqui: a
-    integracao de 36 h e' externa.
+    em formato IC (State.from_ic_file). 'n' (impar, default 7) e' o numero de
+    perturbacoes: se houver mais series, usa as n primeiras; se houver menos,
+    erro. 'seed' e' apenas proveniencia aqui: a integracao de 36 h e' externa.
+    'remove_mean' e 'q_profile' seguem para build/apply e para o members.json.
 
-    Retorna os 15 caminhos gravados por 'write_ensemble'.
+    Retorna os 2n+1 caminhos gravados por 'write_ensemble'.
     """
+    n = _check_n(n)
+    q_profile = _validate_q_profile(q_profile)
     control = State.from_ic_file(control_ic)
     series = _normalize_series(member_ics)
     n_members = len(series["members"])
     if n_members == 0:
         raise ValueError("nenhuma serie de membro em member_ics")
+    if n_members < n:
+        raise ValueError(
+            "pediram n=%d mas member_ics tem %d serie(s) de membro" % (n, n_members))
     m_times = len(series["control"])
+    if m_times < 2:
+        raise ValueError("serie de controle tem %d tempo(s); o MB09 precisa de M >= 2"
+                         % (m_times,))
     ctrl = [State.from_ic_file(p) for p in series["control"]]
 
     diffs = {}
-    for k, paths in enumerate(series["members"], start=1):
+    for k, paths in enumerate(series["members"][:n], start=1):
         if len(paths) != m_times:
             raise ValueError(
                 "membro %d tem %d tempos; controle tem %d" % (k, len(paths), m_times))
         states = [State.from_ic_file(p) for p in paths]
         diffs[k] = [_diff_state(s, c) for s, c in zip(states, ctrl)]
-    eofs = build_eofs(diffs, preset)
+    eofs = build_eofs(diffs, preset, n=n, remove_mean=remove_mean,
+                       q_profile=q_profile)
     eofs["meta"]["seed"] = int(seed)
-    states = apply_modes(control, eofs, preset, sigma)
-    return write_ensemble(control_ic, states, out_dir, prefix, suffix=suffix)
+    states = apply_modes(control, eofs, preset, sigma, n=n, q_profile=q_profile)
+    return write_ensemble(control_ic, states, out_dir, prefix, suffix=suffix,
+                          q_profile=q_profile, remove_mean=remove_mean)
 
 
 # ---------------------------------------------------------------------------
@@ -1239,7 +1397,10 @@ def build_eofs_from_files(control_ctl: Union[str, Path],
                           preset: str = mb.DEFAULT_PRESET, *,
                           variables=None, ps_units: str = "hpa",
                           weights=None, keep_basis: bool = False,
-                          hours=None, window=None, analysis_time=None) -> dict:
+                          hours=None, window=None, analysis_time=None,
+                          n: Optional[int] = None,
+                          remove_mean: bool = True,
+                          q_profile: str = DEFAULT_Q_PROFILE) -> dict:
     """Como build_eofs, mas lendo .ctl/.unf do PostGrib (grade, M tempos).
 
     Cada serie (controle e n membros) e' um unico .ctl com nt tempos. A janela
@@ -1256,7 +1417,28 @@ def build_eofs_from_files(control_ctl: Union[str, Path],
     ["analysis_time"]); horarios da janela ausentes geram ValueError com a
     lista de tempos disponiveis. Os campos sao resolvidos pela vlist do .ctl
     (pslc/tvir/umes/uvel/vvel por default) ou por 'variables={"P": "ps", ...}'.
+
+    'n' (impar, >= 1) e' o numero de perturbacoes: None usa todos os membros
+    fornecidos (que tambem precisa ser impar); se n for menor, usa os n
+    primeiros; se for maior que o numero de membros, erro.
+
+    'remove_mean' (default True) e 'q_profile' (artigo_l28 default) seguem para
+    a analise EOF e sao registrados em eofs["meta"].
     """
+    _validate_q_profile(q_profile)
+    member_ctls = list(member_ctls)
+    available = len(member_ctls)
+    if n is None:
+        n_used = _check_n(available)
+    else:
+        n_used = _check_n(n)
+        if available < n_used:
+            raise ValueError(
+                "pediram n=%d mas foram passados %d .ctl de membros"
+                % (n_used, available))
+        member_ctls = member_ctls[:n_used]
+    if not member_ctls:
+        raise ValueError("nenhum .ctl de membro")
     control = _GradsSeries(control_ctl, variables, ps_units, analysis_time=analysis_time)
     if control.nt < 2:
         raise ValueError("controle tem %d tempos; o MB09 precisa de M >= 2" % (control.nt))
@@ -1296,11 +1478,16 @@ def build_eofs_from_files(control_ctl: Union[str, Path],
             yield _member_arrays(diff)
 
     eofs = _assemble_eofs(gen(), preset, control.lat, control.lon, weights,
-                          keep_basis, source=control_ctl)
+                          keep_basis, source=control_ctl, remove_mean=remove_mean)
     eofs["meta"].update({
         "hours": [float(h) for h in selected],
         "analysis_time": control.analysis_time.strftime("%Y%m%d%H"),
         "n_ignored_times": n_ignored,
+        "n_requested": None if n is None else n_used,
+        "n_available": available,
+        "n_used": n_used,
+        "remove_mean": bool(remove_mean),
+        "q_profile": _validate_q_profile(q_profile),
     })
     return eofs
 
@@ -1320,6 +1507,7 @@ def save_eofs(path: Union[str, Path], eofs: Mapping[str, object]) -> Path:
         "kmax": int(eofs["kmax"]),
         "nlat": int(eofs["nlat"]),
         "nlon": int(eofs["nlon"]),
+        "extra": dict(eofs.get("meta", {})),
     }
     payload: Dict[str, np.ndarray] = {
         "meta": np.asarray(json.dumps(meta)),
@@ -1387,7 +1575,7 @@ def load_eofs(path: Union[str, Path]) -> dict:
         "fields": meta["fields"], "eof_fields": meta["eof_fields"],
         "n": meta["n"], "m_times": meta["m_times"], "kmax": meta["kmax"],
         "nlat": meta["nlat"], "nlon": meta["nlon"], "lat": lat, "lon": lon,
-        "members": members, "meta": {},
+        "members": members, "meta": dict(meta.get("extra", {})),
     }
 
 
@@ -1453,14 +1641,17 @@ def _parse_sigma(text: Optional[str]) -> Optional[Dict[str, object]]:
 
 
 def _cmd_random(args) -> int:
+    n = _check_n(args.n_modes)
+    q_profile = _validate_q_profile(args.q_profile)
     control = State.from_ic_file(args.ic)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed)
     suffix = (".%s" % args.resolution) if args.resolution else ""
     paths = []
-    for k in range(1, int(args.n) + 1):
-        state = perturbed_state(control, random_deltas(control, rng))
+    for k, delta in enumerate(random_deltas(control, rng, n=n, q_profile=q_profile),
+                              start=1):
+        state = perturbed_state(control, delta)
         path = out_dir / ("%s_%02d.unf%s" % (args.prefix, k, suffix))
         state.to_ic_file(path, template=args.ic)
         paths.append(path)
@@ -1469,7 +1660,9 @@ def _cmd_random(args) -> int:
         "members": [str(p) for p in paths],
         "seed": int(args.seed),
         "preset": args.preset,
-        "n": int(args.n),
+        "n": n,
+        "n_members": n,
+        "q_profile": q_profile,
     }
     (out_dir / "random.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1494,20 +1687,30 @@ def _discover_build_inputs(args):
 
 
 def _cmd_build(args) -> int:
+    n = _check_n(args.n_modes)
+    remove_mean = args.remove_mean == "yes"
+    q_profile = _validate_q_profile(args.q_profile)
     control, members = _discover_build_inputs(args)
+    if len(members) > n:
+        print("aviso: %d membro(s) fornecidos; usando os %d primeiros (n=%d)"
+              % (len(members), n, n))
     hours = _parse_hours(args.times)
     window = None if hours is not None else _parse_window(args.window)
     eofs = build_eofs_from_files(
         control, members, preset=args.preset,
         variables=_parse_vars(args.vars), ps_units=args.ps_units,
-        hours=hours, window=window, analysis_time=args.analysis_time,
+        hours=hours, window=window, analysis_time=args.analysis_time, n=n,
+        remove_mean=remove_mean, q_profile=q_profile,
     )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     save_eofs(out, eofs)
-    print("eof: %s (n=%d, M=%d, preset=%s, campos=%s, horas=%s)"
+    print("eof: %s (n=%d, M=%d, preset=%s, campos=%s, remove_mean=%s, "
+          "q_profile=%s, horas=%s)"
           % (out, eofs["n"], eofs["m_times"], eofs["preset"],
              ",".join(eofs["eof_fields"]),
+             "yes" if eofs["meta"]["remove_mean"] else "no",
+             eofs["meta"]["q_profile"],
              ",".join("%g" % h for h in eofs["meta"].get("hours", []))))
     ignored = int(eofs["meta"].get("n_ignored_times", 0))
     if ignored:
@@ -1517,12 +1720,21 @@ def _cmd_build(args) -> int:
 
 
 def _cmd_apply(args) -> int:
+    n = _check_n(args.n_modes)
     eofs = load_eofs(args.eof)
+    meta = eofs.get("meta", {})
+    if eofs["n"] > n:
+        print("aviso: eof.npz tem %d modo(s); usando os %d primeiros (n=%d)"
+              % (eofs["n"], n, n))
+    q_profile = _validate_q_profile(args.q_profile or meta.get("q_profile"))
     control = State.from_ic_file(args.ic)
     preset = args.preset or eofs["preset"]
-    states = apply_modes(control, eofs, preset, _parse_sigma(args.sigma))
+    states = apply_modes(control, eofs, preset, _parse_sigma(args.sigma), n=n,
+                         q_profile=q_profile)
     suffix = (".%s" % args.resolution) if args.resolution else ""
-    paths = write_ensemble(args.ic, states, args.out_dir, args.prefix, suffix=suffix)
+    paths = write_ensemble(args.ic, states, args.out_dir, args.prefix, suffix=suffix,
+                           q_profile=q_profile,
+                           remove_mean=meta.get("remove_mean"))
     for path in paths:
         print(path)
     return 0
@@ -1538,9 +1750,13 @@ def build_parser():
     p = sub.add_parser("random", help="gera n ICs com perturbacoes aleatorias")
     p.add_argument("--ic", required=True, help="IC da analise de controle")
     p.add_argument("--out-dir", required=True)
-    p.add_argument("--n", type=int, default=mb.N_PERTURBATIONS)
+    p.add_argument("--n-modes", "--n", dest="n_modes", type=int,
+                   default=mb.N_PERTURBATIONS,
+                   help="numero de perturbacoes (impar, default 7)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--preset", default=mb.DEFAULT_PRESET)
+    p.add_argument("--q-profile", default=DEFAULT_Q_PROFILE, choices=Q_PROFILES,
+                   help="tabela de sigma de q (default %s)" % (DEFAULT_Q_PROFILE,))
     p.add_argument("--resolution", default=None, help="sufixo do nome, ex. TQ0126L042")
     p.add_argument("--prefix", default="mb09rand")
     p.set_defaults(func=_cmd_random)
@@ -1550,8 +1766,16 @@ def build_parser():
     p.add_argument("--control", default=None, help=".ctl do controle (PostGrib)")
     p.add_argument("--members", nargs="+", default=None, help=".ctl dos n membros")
     p.add_argument("--preset", default=mb.DEFAULT_PRESET)
+    p.add_argument("--n-modes", "--n", dest="n_modes", type=int,
+                   default=mb.N_PERTURBATIONS,
+                   help="numero de perturbacoes (impar, default 7)")
     p.add_argument("--vars", default=None, help="P=pslc,T=tvir,Q=umes,U=uvel,V=vvel")
     p.add_argument("--ps-units", default="hpa", choices=("hpa", "pa"))
+    p.add_argument("--remove-mean", default="yes", choices=("yes", "no"),
+                   help="remove a media temporal de X antes de G (default yes; "
+                        "o operacional usa no)")
+    p.add_argument("--q-profile", default=DEFAULT_Q_PROFILE, choices=Q_PROFILES,
+                   help="tabela de sigma de q (default %s)" % (DEFAULT_Q_PROFILE,))
     p.add_argument("--window", default="6:36:3",
                    help="janela inicio:fim:passo em horas (default 6:36:3 => M=11)")
     p.add_argument("--times", default=None,
@@ -1566,8 +1790,13 @@ def build_parser():
     p.add_argument("--ic", required=True, help="IC da analise de controle")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--preset", default=None)
+    p.add_argument("--n-modes", "--n", dest="n_modes", type=int,
+                   default=mb.N_PERTURBATIONS,
+                   help="numero de perturbacoes (impar, default 7)")
     p.add_argument("--resolution", default=None)
     p.add_argument("--prefix", default="mb09")
+    p.add_argument("--q-profile", default=None, choices=Q_PROFILES,
+                   help="sobrescreve o q_profile gravado no eofs")
     p.add_argument("--sigma", default=None, help="ex. T=1.5,wind=5.0,p=1.0")
     p.set_defaults(func=_cmd_apply)
     return parser

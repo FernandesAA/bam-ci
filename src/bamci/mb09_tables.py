@@ -122,6 +122,36 @@ Q_STDDEV_L28_X1E3: Tuple[float, ...] = (
 #: O mesmo perfil em kg/kg (a tabela publicada traz x1e-3).
 Q_STDDEV_L28: Tuple[float, ...] = tuple(1.0e-3 * v for v in Q_STDDEV_L28_X1E3)
 
+#: Perfil de Q da IMPLEMENTACAO OPERACIONAL (oensMB09_bam_xc50), ja em 42 camadas
+#: sigma do modelo (nao e a Tabela 1 do artigo, que e L28). Fonte:
+#: 'include/TQ0126L042/umipert_eof.nml' (STDQ em g/kg); a conversao para kg/kg
+#: esta em 'eofhum.f:235-236' (divide por 1000). Camadas 1..17 tem valor; de 18
+#: a 42 o operacional zera (topo nao perturbado).
+Q_STDDEV_OPER_L42_X1E3: Tuple[float, ...] = (
+    0.770, 0.780, 0.780, 0.820, 0.800, 0.980, 1.030, 1.080, 1.130, 1.180,
+    1.050, 0.786, 0.523, 0.260, 0.195, 0.130, 0.065,
+    0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000,
+    0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000,
+    0.000, 0.000, 0.000, 0.000, 0.000,
+)
+
+#: O mesmo perfil operacional em kg/kg.
+Q_STDDEV_OPER_L42: Tuple[float, ...] = tuple(1.0e-3 * v for v in Q_STDDEV_OPER_L42_X1E3)
+
+#: Perfis de desvio-padrao de Q disponiveis (kg/kg).
+#:
+#: * 'artigo_l28'       -- Tabela 1 do MB09 (p. 1442), 28 camadas sigma;
+#:                         interpolado para as camadas do modelo (default);
+#: * 'operacional_l42'  -- perfil da implementacao operacional em 42 camadas
+#:                         sigma (umipert_eof.nml); so vale para n_layers=42.
+Q_PROFILES: Dict[str, Tuple[float, ...]] = {
+    "artigo_l28": Q_STDDEV_L28,
+    "operacional_l42": Q_STDDEV_OPER_L42,
+}
+
+#: Perfil default de q (o do artigo; ver docs/mb09.md secao 4).
+Q_PROFILE_DEFAULT = "artigo_l28"
+
 
 # ---------------------------------------------------------------------------
 # 5. Utilitarios de sigma
@@ -167,18 +197,24 @@ def q_stddev_for_layers(
     source_sigma_layers: Optional[Sequence[float]] = None,
     delta_sigma: Optional[Sequence[float]] = None,
     source_delta_sigma: Optional[Sequence[float]] = None,
+    profile: str = Q_PROFILE_DEFAULT,
 ) -> List[float]:
-    """Perfil de desvio-padrao de Q (kg/kg) reamostrado para n_layers.
+    """Perfil de desvio-padrao de Q (kg/kg) para as camadas do modelo.
 
-    Interpola linearmente a Tabela 1 do MB09 (28 camadas sigma, p. 1442) nas
-    coordenadas sigma das camadas do modelo -- a mesma ideia que os autores
-    usaram ao interpolar os valores da ECMWF para as camadas do CPTEC (p. 1442).
+    Dois perfis (ver Q_PROFILES e docs/mb09.md secao 4):
 
-    Regra de ouro: a amplitude de q tem de sair do DeltaSigma do modelo. Sempre
-    que o chamador puder, passe as coordenadas reais (sigma_layers=... ou
-    delta_sigma=...) tanto para o destino quanto para a origem (Tabela 1 em
-    L28). A grade uniforme e apenas fallback, porque a diferenca chega a ~30%
-    num ponto da troposfera alta (ver docs/mb09.md, secao 4).
+    * profile='artigo_l28' (DEFAULT): interpola linearmente a Tabela 1 do MB09
+      (28 camadas sigma, p. 1442) nas coordenadas sigma do modelo -- a mesma
+      ideia que os autores usaram ao interpolar os valores da ECMWF para as
+      camadas do CPTEC (p. 1442);
+    * profile='operacional_l42': devolve o perfil da implementacao operacional
+      (umipert_eof.nml, 42 camadas sigma) SEM interpolar; exige n_layers == 42.
+
+    Regra de ouro (perfil do artigo): a amplitude de q tem de sair do DeltaSigma
+    do modelo. Sempre que o chamador puder, passe as coordenadas reais
+    (sigma_layers=... ou delta_sigma=...) tanto para o destino quanto para a
+    origem (Tabela 1 em L28). A grade uniforme e apenas fallback, porque a
+    diferenca chega a ~30% num ponto da troposfera alta (docs/mb09.md, secao 4).
 
     Parametros
     ----------
@@ -197,6 +233,9 @@ def q_stddev_for_layers(
         DeltaSigma.L042). Converte para centros com sigma_centers_from_delta.
     source_delta_sigma:
         alternativa a source_sigma_layers: espessuras da origem (DeltaSigma.L028).
+    profile:
+        'artigo_l28' (default) ou 'operacional_l42'. Os argumentos de sigma so
+        sao usados para validar o tamanho quando o perfil e o operacional.
 
     Retorna
     -------
@@ -206,7 +245,30 @@ def q_stddev_for_layers(
     if n <= 0:
         raise ValueError("n_layers deve ser > 0 (recebido %r)" % (n_layers,))
 
-    src_vals = np.asarray(Q_STDDEV_L28, dtype=np.float64)
+    key = str(profile).strip().lower()
+    if key not in Q_PROFILES:
+        raise ValueError(
+            "profile %r desconhecido; use um de %s" % (profile, sorted(Q_PROFILES))
+        )
+    if key == "operacional_l42":
+        if n != 42:
+            raise ValueError(
+                "profile='operacional_l42' e o perfil da implementacao "
+                "operacional em 42 camadas sigma (include/TQ0126L042/"
+                "umipert_eof.nml, kg/kg em eofhum.f:235-236); ele nao pode ser "
+                "interpolado para %d camadas. Use n_layers=42 ou "
+                "profile='artigo_l28' (Tabela 1 em L28, interpolada)." % n
+            )
+        # valida (sem usar) as coordenadas passadas: precisam ser de L42
+        _resolve_sigma(
+            42,
+            sigma_layers=sigma_layers,
+            delta_sigma=delta_sigma,
+            origem="destino (perfil operacional L42)",
+        )
+        return [float(v) for v in Q_STDDEV_OPER_L42]
+
+    src_vals = np.asarray(Q_PROFILES[key], dtype=np.float64)
     src_sigma = _resolve_sigma(
         src_vals.size,
         sigma_layers=source_sigma_layers,
@@ -355,6 +417,90 @@ def region_mask_preset(lat, lon, name: Optional[str] = None) -> Dict[str, np.nda
     return {r: region_mask(lat, lon, r) for r in regions_of(name)}
 
 
+# ---------------------------------------------------------------------------
+# 8. Regioes por indice de grade (grade da implementacao operacional 384x192)
+# ---------------------------------------------------------------------------
+#: Grade de referencia dos indices operacionais: (nlat, nlon) = (192, 384).
+INDEX_GRID: Tuple[int, int] = (192, 384)
+
+#: Caixas operacionais em indices 0-based, meio-aberto (j0, j1, i0, i1).
+#:
+#: Faixas originais (1-based, inclusivas; j = 1 e a linha mais ao NORTE)::
+#:
+#:     HN   J   1..75    I   1..384     -> (0,   75,   0, 384)
+#:     TR   J  76..117   I   1..384     -> (75,  117,  0, 384)
+#:     HS   J 118..192   I   1..384     -> (117, 192,  0, 384)
+#:     NAS  J  75..108   I 276..372     -> (74,  108, 275, 372)
+#:     SAS  J 109..161   I 266..362     -> (108, 161, 265, 362)
+#:
+#: Sao as caixas da implementacao operacional (oensMB09_bam_xc50) e valem
+#: apenas para a grade 384x192: os indices NAO sao genericos.
+INDEX_REGIONS: Dict[str, Tuple[int, int, int, int]] = {
+    "HN": (0, 75, 0, 384),
+    "TR": (75, 117, 0, 384),
+    "HS": (117, 192, 0, 384),
+    "NAS": (74, 108, 275, 372),
+    "SAS": (108, 161, 265, 362),
+}
+
+#: Nome do artigo -> letra usada pelo operacional.
+INDEX_REGION_ALIASES: Dict[str, str] = {
+    "NH": "HN",
+    "SH": "HS",
+    "TR": "TR",
+    "NSA": "NAS",
+    "SSA": "SAS",
+}
+
+#: Ordem canonica das caixas por indice (norte -> sul, como no operacional).
+INDEX_REGIONS_ORDER: Tuple[str, ...] = ("HN", "TR", "HS", "NAS", "SAS")
+
+
+def _check_index_grid(nlat: int, nlon: int) -> Tuple[int, int]:
+    """Valida a grade e devolve (nlat, nlon) como inteiros."""
+    nlat_i, nlon_i = int(nlat), int(nlon)
+    if (nlat_i, nlon_i) != INDEX_GRID:
+        raise ValueError(
+            "indices do operacional definidos apenas para a grade %dx%d "
+            "(nlat, nlon); recebido %dx%d -- use region_mask(lat, lon, ...) "
+            "para outras grades" % (INDEX_GRID[0], INDEX_GRID[1], nlat_i, nlon_i)
+        )
+    return nlat_i, nlon_i
+
+
+def region_indices(nlat: int, nlon: int, region: str) -> Tuple[int, int, int, int]:
+    """Caixa da regiao em indices de grade: (j0, j1, i0, i1), 0-based, meio-aberto.
+
+    j cresce de norte para sul (j=1 e a linha mais ao norte) e i de oeste para
+    leste, como na implementacao operacional (grade 384x192). Aceita a letra do
+    operacional (HN, TR, HS, NAS, SAS) ou o nome do artigo (NH, SH, TR, NSA,
+    SSA, maiusculo ou minusculo). Levanta ValueError se a grade nao for 384x192,
+    porque os indices sao especificos dela.
+    """
+    _check_index_grid(nlat, nlon)
+    key = str(region).strip().upper()
+    key = INDEX_REGION_ALIASES.get(key, key)
+    if key not in INDEX_REGIONS:
+        raise KeyError(
+            "regiao %r desconhecida; use uma de %s (ou os nomes do artigo %s)"
+            % (region, list(INDEX_REGIONS), list(INDEX_REGION_ALIASES))
+        )
+    return INDEX_REGIONS[key]
+
+
+def region_mask_by_index(nlat: int, nlon: int, region: str) -> np.ndarray:
+    """Mascara booleana (nlat, nlon) da caixa region em indices de grade.
+
+    Equivalente a region_mask para a grade 384x192, mas usando exatamente as
+    faixas de indices do operacional (j=1 = norte). Ver region_indices.
+    """
+    nlat_i, nlon_i = _check_index_grid(nlat, nlon)
+    j0, j1, i0, i1 = region_indices(nlat_i, nlon_i, region)
+    mask = np.zeros((nlat_i, nlon_i), dtype=bool)
+    mask[j0:j1, i0:i1] = True
+    return mask
+
+
 __all__ = [
     "REGIONS",
     "REGIONS_ORDER",
@@ -375,6 +521,14 @@ __all__ = [
     "M_TIMES",
     "Q_STDDEV_L28_X1E3",
     "Q_STDDEV_L28",
+    "Q_STDDEV_OPER_L42_X1E3",
+    "Q_STDDEV_OPER_L42",
+    "Q_PROFILES",
+    "Q_PROFILE_DEFAULT",
+    "INDEX_GRID",
+    "INDEX_REGIONS",
+    "INDEX_REGIONS_ORDER",
+    "INDEX_REGION_ALIASES",
     "sigma_centers_uniform",
     "sigma_centers_from_delta",
     "q_stddev_for_layers",
@@ -383,4 +537,6 @@ __all__ = [
     "fields_of",
     "region_mask",
     "region_mask_preset",
+    "region_indices",
+    "region_mask_by_index",
 ]

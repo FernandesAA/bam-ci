@@ -368,3 +368,212 @@ def test_mascara_preset_etsa():
     assert mascaras["TR"].tolist() == [False, True, False]
     assert mascaras["NSA"].tolist() == [False, True, False]
     assert list(mb.region_mask_preset(lat, lon, "ext2")) == ["NH", "SH", "TR"]
+
+
+# ---------------------------------------------------------------------------
+# Perfis de Q: artigo (L28) e operacional (L42)
+# ---------------------------------------------------------------------------
+#: Perfil operacional transcrito de forma independente (umipert_eof.nml, g/kg).
+Q_OPER_ARTIGO_NML = [
+    0.770, 0.780, 0.780, 0.820, 0.800, 0.980, 1.030, 1.080, 1.130, 1.180,
+    1.050, 0.786, 0.523, 0.260, 0.195, 0.130, 0.065,
+] + [0.0] * 25
+
+
+def test_perfil_operacional_42_valores_verbatim():
+    assert len(mb.Q_STDDEV_OPER_L42_X1E3) == 42
+    assert list(mb.Q_STDDEV_OPER_L42_X1E3) == Q_OPER_ARTIGO_NML
+
+
+def test_perfil_operacional_zero_acima_da_camada_17():
+    valores = np.asarray(mb.Q_STDDEV_OPER_L42_X1E3)
+    assert np.all(valores[:17] > 0.0)          # camadas 1..17
+    assert np.all(valores[17:] == 0.0)         # camadas 18..42
+    assert valores[16] == pytest.approx(0.065)  # ultima camada perturbada
+    assert valores[11] == pytest.approx(0.786)  # (g/kg, dividido por 1000 depois)
+    assert valores[13] == pytest.approx(0.260)  # reaparece o 0.260 da Tabela 1
+
+
+def test_perfil_operacional_escala_1e3():
+    assert len(mb.Q_STDDEV_OPER_L42) == 42
+    for bruto, fisico in zip(mb.Q_STDDEV_OPER_L42_X1E3, mb.Q_STDDEV_OPER_L42):
+        assert fisico == pytest.approx(bruto * 1.0e-3, rel=0.0, abs=0.0)
+    assert mb.Q_STDDEV_OPER_L42[0] == pytest.approx(7.7e-4)
+    assert mb.Q_STDDEV_OPER_L42[17] == 0.0
+
+
+def test_q_profiles_mapeia_os_dois_perfis():
+    assert set(mb.Q_PROFILES) == {"artigo_l28", "operacional_l42"}
+    assert mb.Q_PROFILES["artigo_l28"] is mb.Q_STDDEV_L28
+    assert mb.Q_PROFILES["operacional_l42"] is mb.Q_STDDEV_OPER_L42
+    assert mb.Q_PROFILE_DEFAULT == "artigo_l28"
+
+
+def test_q_profile_artigo_e_o_default():
+    base = mb.q_stddev_for_layers(42)
+    assert base == mb.q_stddev_for_layers(42, profile="artigo_l28")
+    # as duas opcoes divergem em L42: o operacional zera a partir da camada 18
+    oper = mb.q_stddev_for_layers(42, profile="operacional_l42")
+    assert oper != base
+    assert np.all(np.asarray(oper[17:]) == 0.0)
+    assert np.any(np.asarray(base[17:]) > 0.0)   # o artigo ainda perturba 18..33
+
+
+def test_q_profile_operacional_devolve_verbatim():
+    q = mb.q_stddev_for_layers(42, profile="operacional_l42")
+    assert q == list(mb.Q_STDDEV_OPER_L42)
+    assert len(q) == 42
+    # aceita (e valida) as espessuras de L42 sem interpolar
+    d42 = _delta("DeltaSigma.L042")
+    assert mb.q_stddev_for_layers(42, profile="operacional_l42", delta_sigma=d42) == q
+
+
+@pytest.mark.parametrize("n", [1, 9, 28, 41, 43, 64])
+def test_q_profile_operacional_exige_42_camadas(n):
+    with pytest.raises(ValueError) as exc:
+        mb.q_stddev_for_layers(n, profile="operacional_l42")
+    assert "42 camadas" in str(exc.value)
+    assert "artigo_l28" in str(exc.value)
+
+
+def test_q_profile_operacional_valida_sigma_de_42():
+    with pytest.raises(ValueError):
+        mb.q_stddev_for_layers(42, profile="operacional_l42",
+                               sigma_layers=[0.5] * 41)
+
+
+def test_q_profile_invalido():
+    with pytest.raises(ValueError) as exc:
+        mb.q_stddev_for_layers(42, profile="tabela1")
+    assert "artigo_l28" in str(exc.value)
+    # caixa/espacos sao normalizados: nao e erro
+    assert (mb.q_stddev_for_layers(42, profile="ARTIGO_L28 ")
+            == mb.q_stddev_for_layers(42))
+
+
+# ---------------------------------------------------------------------------
+# Regioes por indice de grade (operacional 384x192, j=1 = norte)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "regiao, esperado",
+    [
+        ("HN", (0, 75, 0, 384)),
+        ("TR", (75, 117, 0, 384)),
+        ("HS", (117, 192, 0, 384)),
+        ("NAS", (74, 108, 275, 372)),
+        ("SAS", (108, 161, 265, 362)),
+    ],
+)
+def test_region_indices_exatos(regiao, esperado):
+    assert mb.region_indices(192, 384, regiao) == esperado
+    assert mb.region_indices(192, 384, regiao.lower()) == esperado
+
+
+@pytest.mark.parametrize(
+    "alias, operacional",
+    [("NH", "HN"), ("SH", "HS"), ("TR", "TR"), ("NSA", "NAS"), ("SSA", "SAS")],
+)
+def test_region_indices_aceita_nome_do_artigo(alias, operacional):
+    assert mb.region_indices(192, 384, alias) == mb.region_indices(192, 384, operacional)
+    assert mb.region_indices(192, 384, alias.lower()) == mb.INDEX_REGIONS[operacional]
+
+
+def test_region_indices_faixas_1based_conferidas():
+    # J 1..75 / 76..117 / 118..192 e I 276..372 / 266..362 -> 0-based
+    assert mb.INDEX_REGIONS["HN"] == (1 - 1, 75, 1 - 1, 384)
+    assert mb.INDEX_REGIONS["TR"] == (76 - 1, 117, 1 - 1, 384)
+    assert mb.INDEX_REGIONS["HS"] == (118 - 1, 192, 1 - 1, 384)
+    assert mb.INDEX_REGIONS["NAS"] == (75 - 1, 108, 276 - 1, 372)
+    assert mb.INDEX_REGIONS["SAS"] == (109 - 1, 161, 266 - 1, 362)
+
+
+def test_region_indices_erros():
+    with pytest.raises(KeyError):
+        mb.region_indices(192, 384, "ETR")
+    with pytest.raises(ValueError) as exc:
+        mb.region_indices(384, 192, "HN")
+    assert "192x384" in str(exc.value)
+    with pytest.raises(ValueError):
+        mb.region_indices(96, 192, "HN")
+    with pytest.raises(ValueError):
+        mb.region_mask_by_index(192, 383, "HN")
+
+
+@pytest.mark.parametrize(
+    "regiao, esperado",
+    [
+        ("HN", 384 * 75),
+        ("TR", 384 * 42),
+        ("HS", 384 * 75),
+        ("NAS", 97 * 34),
+        ("SAS", 97 * 53),
+    ],
+)
+def test_region_mask_by_index_contagem(regiao, esperado):
+    mask = mb.region_mask_by_index(192, 384, regiao)
+    assert mask.shape == (192, 384)
+    assert mask.dtype == bool
+    assert int(mask.sum()) == esperado
+
+
+def test_region_mask_by_index_e_retangular():
+    mask = mb.region_mask_by_index(192, 384, "NAS")
+    j0, j1, i0, i1 = mb.region_indices(192, 384, "NAS")
+    assert np.all(mask[j0:j1, i0:i1])
+    assert int(mask.sum()) == (j1 - j0) * (i1 - i0)
+    # fora da caixa nao ha True
+    fora = mask.copy()
+    fora[j0:j1, i0:i1] = False
+    assert not fora.any()
+
+
+def _grid_latlon(nlat=192, nlon=384):
+    """Latitudes/longitudes de celula (centros) da grade do operacional."""
+    lat = 90.0 - (np.arange(nlat) + 0.5) * 180.0 / nlat      # j=1 -> norte
+    lon = (np.arange(nlon) + 0.5) * 360.0 / nlon
+    return lat, lon
+
+
+@pytest.mark.parametrize("op, artigo", [("HN", "NH"), ("TR", "TR"), ("HS", "SH")])
+def test_mascara_por_indice_identica_a_latlon_nas_bandas(op, artigo):
+    """As 3 faixas (HN/TR/HS) reproduzem exatamente as caixas do artigo."""
+    lat, lon = _grid_latlon()
+    idx = mb.region_mask_by_index(192, 384, op)
+    ll = mb.region_mask(lat[:, None], lon[None, :], artigo)
+    assert np.array_equal(idx, ll)
+    # as faixas sao disjuntas e cobrem todas as latitudes
+    faixas = {op: mb.region_mask_by_index(192, 384, op)[:, 0] for op in ("HN", "TR", "HS")}
+    assert sum(int(v.sum()) for v in faixas.values()) == len(lat)
+    assert not (faixas["HN"] & faixas["TR"]).any()
+    assert not (faixas["TR"] & faixas["HS"]).any()
+
+
+def test_mascara_por_indice_longitudes_dentro_de_2_graus():
+    """NAS/SAS: longitudes dentro de 2 graus das caixas do artigo (lat nao)."""
+    lat, lon = _grid_latlon()
+    casos = [("NAS", "NSA", 260.0, 350.0), ("SAS", "SSA", 250.0, 340.0)]
+    for op, artigo, lon_min, lon_max in casos:
+        j0, j1, i0, i1 = mb.region_indices(192, 384, op)
+        assert abs(lon[i0] - (lon_min + 360.0) % 360.0) <= 2.0
+        assert abs(lon[i1 - 1] - lon_max) <= 2.0
+        # a mascara por indice fica dentro da caixa do artigo dilatada em 2 graus
+        dilatada = mb.region_mask(lat[:, None], lon[None, :],
+                                  (-90.0, 90.0, lon_min - 2.0, lon_max + 2.0))
+        idx = mb.region_mask_by_index(192, 384, op)
+        assert np.all(dilatada[idx])
+
+
+def test_caixas_por_indice_do_operacional_nao_sao_as_do_artigo_em_latitude():
+    """Em latitude NAS/SAS do operacional diferem >2 graus das caixas do artigo.
+
+    Documenta a divergencia (nao e bug): J 75..108 cobre 20.2N-10.8S (o artigo
+    pede 20S-20N) e J 109..161 cobre 11.7S-60.5S (o artigo pede 20S-60S).
+    """
+    lat, _ = _grid_latlon()
+    j0, j1, _, _ = mb.region_indices(192, 384, "NAS")
+    assert abs(lat[j1 - 1] - (-20.0)) > 2.0        # ~9.2 graus
+    assert abs(lat[j0] - 20.0) <= 2.0
+    j0, j1, _, _ = mb.region_indices(192, 384, "SAS")
+    assert abs(lat[j0] - (-20.0)) > 2.0            # ~8.3 graus
+    assert abs(lat[j1 - 1] - (-60.0)) <= 2.0
+

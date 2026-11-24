@@ -63,6 +63,8 @@ OMP_STACKSIZE = "256M"
 
 #: nomes que o modelo efetivamente abre em <suite>/model/datain
 IC_TEMPLATE = "GANLNMC{date}S.unf.{resolution}"
+#: nomenclatura opcional do ensaio operacional (CTR, 01P, 01N, ...)
+IC_OPER_TEMPLATE = "GANL{tag}{date}S.unf.{resolution}"
 SST_TEMPLATE = "SSTMonthlyDirec{date}.G{latitude:05d}"
 
 #: chaves cujo valor textual precisa de aspas no namelist
@@ -269,13 +271,17 @@ def render_pbs(
     queue: str = DEFAULT_QUEUE,
     account: str = DEFAULT_ACCOUNT,
     walltime: str = DEFAULT_WALLTIME,
-    nodes: int = DEFAULT_NODES,
-    ppn: int = DEFAULT_PPN,
+    nodes: int | None = None,
+    ppn: int | None = None,
     omp_threads: int = DEFAULT_OMP_THREADS,
     env_source: str | Path | Sequence[str] | None = DEFAULT_ENV_SOURCE,
     *,
     ranks: int = DEFAULT_RANKS,
     ranks_per_node: int = DEFAULT_RANKS_PER_NODE,
+    pbs_style: str = "mpp",
+    mppwidth: int | None = None,
+    mppnppn: int | None = None,
+    mppdepth: int | None = None,
     exe_name: str = "ParModel_MPI",
     stdout: str = "print.out",
     log_name: str | None = None,
@@ -283,16 +289,23 @@ def render_pbs(
 ) -> str:
     """Texto do script PBS que roda o modelo com aprun.
 
-    aprun_args pode ser uma string pronta ou uma sequencia; quando omitido usa
-    a linha operacional -m1000h -n <ranks> -N <ranks_per_node> -d <threads>.
+    pbs_style escolhe a sintaxe do recurso:
+      * mpp:    -l mppwidth=N,mppnppn=N,mppdepth=N (Moab/Torque do oensMB09)
+      * nodes:  -l nodes=N:ppn=N (bam_SeasonalClima/Torque classico)
+      * select: -l select=N:ncpus=N:mpiprocs=N (PBS Pro)
+    Em nodes/select o numero de chunks vem de nodes (ou de
+    ceil(ranks/ranks_per_node)). aprun_args pode ser uma string pronta ou uma
+    sequencia; quando omitido usa -m1000h -n <ranks> -N <ranks_per_node> -d
+    <threads>, que precisa casar com o recurso pedido.
     """
-    nodes = int(nodes)
-    ppn = int(ppn)
+    style = str(pbs_style).lower()
+    if style not in ("mpp", "nodes", "select"):
+        raise ValueError("pbs_style deve ser 'mpp', 'nodes' ou 'select'")
+    ranks = int(ranks)
+    ranks_per_node = int(ranks_per_node)
     omp_threads = int(omp_threads)
-    if nodes < 1 or ppn < 1:
-        raise ValueError("nodes e ppn devem ser >= 1")
-    if omp_threads < 1:
-        raise ValueError("omp_threads deve ser >= 1")
+    if ranks < 1 or ranks_per_node < 1 or omp_threads < 1:
+        raise ValueError("ranks, ranks_per_node e omp_threads devem ser >= 1")
     try:
         hours = int(str(walltime).split(":")[0])
     except (TypeError, ValueError):
@@ -316,13 +329,36 @@ def render_pbs(
         _q(stdout),
     )
 
+    chunks = (
+        int(nodes) if nodes is not None
+        else (ranks + ranks_per_node - 1) // ranks_per_node
+    )
+    if int(chunks) < 1:
+        raise ValueError("nodes/chunks deve ser >= 1")
+    if style == "mpp":
+        width = ranks if mppwidth is None else int(mppwidth)
+        nppn = ranks_per_node if mppnppn is None else int(mppnppn)
+        depth = omp_threads if mppdepth is None else int(mppdepth)
+        if width < 1 or nppn < 1 or depth < 1:
+            raise ValueError("mppwidth/mppnppn/mppdepth devem ser >= 1")
+        resource = "#PBS -l mppwidth=%d,mppnppn=%d,mppdepth=%d" % (
+            width, nppn, depth)
+    elif style == "nodes":
+        ppn_use = ranks_per_node if ppn is None else int(ppn)
+        if ppn_use < 1:
+            raise ValueError("ppn deve ser >= 1")
+        resource = "#PBS -l nodes=%d:ppn=%d" % (int(chunks), ppn_use)
+    else:  # select (PBS Pro)
+        resource = "#PBS -l select=%d:ncpus=%d:mpiprocs=%d" % (
+            int(chunks), omp_threads, ranks_per_node)
+
     log = log_name or "%s.log" % job_name
     lines = [
         "#!/bin/bash",
         "#PBS -N %s" % job_name,
         "#PBS -q %s" % queue,
         "#PBS -A %s" % account,
-        "#PBS -l nodes=%d:ppn=%d" % (nodes, ppn),
+        resource,
         "#PBS -l walltime=%s" % walltime,
         "#PBS -j oe",
         "#PBS -V",
@@ -434,6 +470,38 @@ def _place(src: str | Path, dst: str | Path, mode: str = "link") -> str:
         return "copy"
 
 
+def _ic_target_name(
+    label: str,
+    resolution: str,
+    ic_naming: str = "simple",
+    *,
+    control: bool = False,
+    member: int | None = None,
+    sign: str | None = None,
+) -> str:
+    """Nome do IC no datain: GANLNMC... (simple) ou GANL{CTR|NNP|NNN}... (operacional)."""
+    naming = str(ic_naming).lower()
+    if naming not in ("simple", "operacional"):
+        raise ValueError("ic_naming deve ser 'simple' ou 'operacional'")
+    if naming == "simple":
+        return IC_TEMPLATE.format(date=label, resolution=resolution)
+    if control:
+        tag = "CTR"
+    else:
+        if member is None or sign is None:
+            raise ValueError(
+                "ic_naming='operacional' exige member (1..N) e sign (+/-) para membros"
+            )
+        suffix = {"+": "P", "-": "N", "P": "P", "N": "N"}.get(str(sign).strip().upper())
+        if suffix is None:
+            raise ValueError("sign deve ser '+' ou '-' (ou P/N), recebido %r" % (sign,))
+        index = int(member)
+        if index < 1:
+            raise ValueError("member deve ser >= 1")
+        tag = "%02d%s" % (index, suffix)
+    return IC_OPER_TEMPLATE.format(tag=tag, date=label, resolution=resolution)
+
+
 def link_inputs(
     suite: str | Path,
     ic_path: str | Path,
@@ -444,13 +512,18 @@ def link_inputs(
     mode: str = "link",
     datain: str | Path | None = None,
     nlat: int | None = None,
+    ic_naming: str = "simple",
+    control: bool = False,
+    member: int | None = None,
+    sign: str | None = None,
     dry_run: bool = False,
 ) -> LinkedInputs:
-    """Cria GANLNMC<data>S.unf.<res> e SSTMonthlyDirec<data>.G00<lat>.
+    """Cria o IC e a SST com os nomes que o modelo abre.
 
-    O modelo le nomes fixos (GANLNMC.../SSTMonthlyDirec...), enquanto o bamci
-    gera GANL<CASE>... e SSTWeekly.... Como o conteudo e identico, basta
-    linkar/copiar para o nome esperado. datain permite apontar para um
+    O modelo le GANLNMC<data>S.unf.<res> e SSTMonthlyDirec<data>.G00<lat>. Com
+    ic_naming='operacional' o IC tambem recebe o nome do ensaio
+    (GANLCTR..., GANL01P..., GANL01N...) e um alias GANLNMC aponta para ele,
+    para o modelo continuar lendo o nome fixo. datain permite apontar para um
     diretorio por membro do ensemble.
     """
     label = parse_date(labeli)
@@ -459,12 +532,18 @@ def link_inputs(
     sst_source = Path(sst_path)
     res = resolution or resolution_from_path(ic_source) or DEFAULT_RESOLUTION
     lat = int(nlat or nlat_from_path(sst_source) or 192)
-    ic_target = root / IC_TEMPLATE.format(date=label, resolution=res)
+    ic_target = root / _ic_target_name(
+        label, res, ic_naming, control=control, member=member, sign=sign
+    )
+    simple_name = root / IC_TEMPLATE.format(date=label, resolution=res)
     sst_target = root / SST_TEMPLATE.format(date=label[:8], latitude=lat)
     if dry_run:
         return LinkedInputs(ic=ic_target, sst=sst_target, mode=str(mode))
     root.mkdir(parents=True, exist_ok=True)
     ic_mode = _place(ic_source, ic_target, mode)
+    if ic_target != simple_name:
+        # o modelo le GANLNMC...; o nome operacional e o que fica documentado
+        _place(ic_target, simple_name, "link" if str(mode).lower() == "link" else mode)
     _place(sst_source, sst_target, mode)
     return LinkedInputs(ic=ic_target, sst=sst_target, mode=ic_mode)
 
@@ -479,13 +558,18 @@ def stage_datain(
     labeli: str | datetime | None = None,
     resolution: str | None = None,
     mode: str = "link",
+    ic_naming: str = "simple",
+    control: bool = False,
+    member: int | None = None,
+    sign: str | None = None,
     dry_run: bool = False,
 ) -> Path:
     """Cria um datain por membro (espelho + IC/SST do membro).
 
-    Cada job aponta path_in para o seu proprio datain.<label>; assim os 15
-    membros do MB09 podem rodar simultaneamente sem sobrescrever o GANLNMC e o
-    SSTMonthlyDirec uns dos outros.
+    Cada job aponta path_in para o seu proprio datain.<label>; assim os
+    2N+1 membros do MB09 podem rodar simultaneamente sem sobrescrever o
+    GANLNMC e o SSTMonthlyDirec uns dos outros. ic_naming='operacional'
+    grava GANLCTR/GANL{NN}P/GANL{NN}N (com alias GANLNMC para o modelo).
     """
     safe = _safe_label(label)
     dest = Path(work_dir) / ("datain.%s" % safe)
@@ -514,6 +598,10 @@ def stage_datain(
         resolution=resolution,
         mode=mode,
         datain=dest,
+        ic_naming=ic_naming,
+        control=control,
+        member=member,
+        sign=sign,
     )
     return dest
 
@@ -823,6 +911,17 @@ def _add_dry(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dry-run", action="store_true", help="nao executa/escreve nada")
 
 
+def _add_ic_naming_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--ic-naming", default="simple", choices=("simple", "operacional"),
+                        help="simple: GANLNMC...; operacional: GANLCTR/GANL01P/GANL01N")
+    parser.add_argument("--control", action="store_true",
+                        help="IC de controle (nome GANLCTR no modo operacional)")
+    parser.add_argument("--member", type=int, default=None,
+                        help="indice k=1..N da perturbacao (modo operacional)")
+    parser.add_argument("--sign", choices=("+", "-", "P", "N"), default=None,
+                        help="sinal da perturbacao (modo operacional)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bamci.bamrun", description="driver do modelo BAM 1.2 e do ensaio MB09"
@@ -855,12 +954,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--queue", default=DEFAULT_QUEUE)
     p.add_argument("--account", default=DEFAULT_ACCOUNT)
     p.add_argument("--walltime", default=DEFAULT_WALLTIME)
-    p.add_argument("--nodes", type=int, default=DEFAULT_NODES)
-    p.add_argument("--ppn", type=int, default=DEFAULT_PPN)
+    p.add_argument("--nodes", type=int, default=None)
+    p.add_argument("--ppn", type=int, default=None)
     p.add_argument("--omp-threads", type=int, default=DEFAULT_OMP_THREADS)
     p.add_argument("--env-source", default=DEFAULT_ENV_SOURCE)
     p.add_argument("--ranks", type=int, default=DEFAULT_RANKS)
     p.add_argument("--ranks-per-node", type=int, default=DEFAULT_RANKS_PER_NODE)
+    p.add_argument("--pbs-style", default="mpp", choices=("mpp", "nodes", "select"),
+                   help="sintaxe do recurso PBS (default mpp para o ensaio)")
+    p.add_argument("--mppwidth", type=int, default=None,
+                   help="PBS: #PBS -l mppwidth=N (ensaio operacional)")
+    p.add_argument("--mppnppn", type=int, default=None,
+                   help="PBS: #PBS -l mppnppn=N")
+    p.add_argument("--mppdepth", type=int, default=None,
+                   help="PBS: #PBS -l mppdepth=N")
     _add_dry(p)
 
     p = sub.add_parser("prepare", help="cria exec_NMC.<label> e copia o executavel")
@@ -879,6 +986,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", default="link", choices=("link", "copy"))
     p.add_argument("--datain", default=None)
     p.add_argument("--nlat", type=int, default=None)
+    _add_ic_naming_args(p)
     _add_dry(p)
 
     p = sub.add_parser("stage", help="cria um datain por membro do ensemble")
@@ -890,6 +998,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--labeli", default=None)
     p.add_argument("--resolution", default=None)
     p.add_argument("--mode", default="link", choices=("link", "copy"))
+    _add_ic_naming_args(p)
     _add_dry(p)
 
     p = sub.add_parser("submit", help="submete o script PBS")
@@ -982,6 +1091,10 @@ def main(argv=None) -> int:
                     env_source=args.env_source,
                     ranks=args.ranks,
                     ranks_per_node=args.ranks_per_node,
+                    pbs_style=args.pbs_style,
+                    mppwidth=args.mppwidth,
+                    mppnppn=args.mppnppn,
+                    mppdepth=args.mppdepth,
                 )
                 if args.out:
                     print(write_pbs(args.out, text))
@@ -997,7 +1110,9 @@ def main(argv=None) -> int:
             result = link_inputs(
                 args.suite, args.ic, args.sst, args.labeli,
                 resolution=args.resolution, mode=args.mode,
-                datain=args.datain, nlat=args.nlat, dry_run=args.dry_run,
+                datain=args.datain, nlat=args.nlat,
+                ic_naming=args.ic_naming, control=args.control,
+                member=args.member, sign=args.sign, dry_run=args.dry_run,
             )
             print(result.ic)
             print(result.sst)
@@ -1005,7 +1120,9 @@ def main(argv=None) -> int:
             print(stage_datain(
                 args.work, args.label, args.suite, args.ic, args.sst,
                 labeli=args.labeli, resolution=args.resolution,
-                mode=args.mode, dry_run=args.dry_run,
+                mode=args.mode, ic_naming=args.ic_naming,
+                control=args.control, member=args.member, sign=args.sign,
+                dry_run=args.dry_run,
             ))
         elif args.command == "submit":
             print(submit(args.pbs_path, block=args.block,
