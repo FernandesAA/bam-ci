@@ -27,6 +27,7 @@ continua sendo o default.
 - [Formatos de arquivo](formatos.md) — IC, SST e DeltaSigma
 - [Validacao](validacao.md) — numeros medidos contra a producao
 - [MB09: especificacao do ensaio](mb09.md)
+- [Artefatos do ensaio 2026-11-19](artefatos_ensaio_20261119.md)
 - [Literatura: perturbacao de condicoes iniciais](literatura-perturbacoes.md)
 - [API](api.md) — modulos e funcoes principais
 - [Problemas conhecidos](troubleshooting.md)
@@ -41,7 +42,7 @@ continua sendo o default.
 | SST semanal (RTG/OISST) | validada (mascara identica, SST rms 0.58 K, corr 0.9990) |
 | DeltaSigma (espessuras sigma) | 7 arquivos em `DeltaSigma/` (L009..L160) acompanham o pacote, soma 1 |
 | ensaio MB09 (EOF) | nucleo + driver BAM + metricas + shell 0-9; presets oper/ext1/trop/ext2/etsa, 15 membros |
-| testes | 363 (+1 skip), sem dependencia de rede |
+| testes | 387 (+1 skip), sem dependencia de rede |
 
 ## Licenca
 

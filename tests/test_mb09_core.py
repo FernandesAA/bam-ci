@@ -889,3 +889,54 @@ def test_build_from_files_source_delta_sigma_meta(tmp_path):
     assert rc == 0
     assert mb09.load_eofs(out2)["meta"]["source_delta_sigma"] is None
 
+
+
+def test_write_ensemble_q_positivity(tmp_path):
+    """q com ringing de Gibbs: o ensemble grava q>=0 na grade sem tocar o resto."""
+    from bamci.ic_format import read_ic
+    from bamci.levels import grid_shape
+    from bamci.spectral import from_file_order, synthesis
+
+    base_dir = tmp_path / "base"
+    base_dir.mkdir()
+    control_path = _make_ic(base_dir, mend=6, kmax=3, style="hybrid")
+    control = mb09.State.from_ic_file(control_path)
+    delta = np.zeros_like(control.q)
+    delta[1, 2:4, 3:5] = 0.01          # perturbacao sharp -> ringing espectral
+    states = [mb09.perturbed_state(control, {"q": delta}),
+              mb09.perturbed_state(control, {"q": -delta})]
+
+    out0 = tmp_path / "q0"
+    out3 = tmp_path / "q3"
+    p0 = mb09.write_ensemble(control_path, states, out0, "ens", q_positivity=0)
+    p3 = mb09.write_ensemble(control_path, states, out3, "ens", q_positivity=3)
+    assert len(p0) == len(p3) == 3
+    assert all(p.stat().st_size == control_path.stat().st_size for p in p0 + p3)
+
+    data0 = read_ic(p0[1])
+    data3 = read_ic(p3[1])
+    # so o bloco de q muda: tvir/div/vort/lnps/topo sao byte a byte iguais
+    for name in ("tvir", "divg", "vort", "lnps", "topo"):
+        np.testing.assert_array_equal(np.asarray(data0[name]), np.asarray(data3[name]))
+    assert not np.array_equal(np.asarray(data0["sphu"]), np.asarray(data3["sphu"]))
+
+    mend = control._mend
+    nlon, nlat = grid_shape(mend)
+
+    def q_min(data):
+        return min(
+            float(np.min(synthesis(from_file_order(np.asarray(data["sphu"])[:, k], mend),
+                                   mend, nlat, nlon)))
+            for k in range(int(data["kmax"])))
+
+    assert q_min(data0) < -1e-8
+    assert q_min(data3) >= -1e-8
+
+    man0 = json.loads((out0 / "members.json").read_text())
+    man3 = json.loads((out3 / "members.json").read_text())
+    assert man0["q_positivity"] == 0
+    assert man3["q_positivity"] == 3
+    assert all(m["q_min"] is None for m in man0["members"])
+    assert all(m["q_min"] >= -1e-8 for m in man3["members"])
+    assert man3["n"] == 1 and man3["n_members"] == 3
+

@@ -33,6 +33,37 @@ O seno de m=0 e sempre nulo.
 Gaussiana com **192 latitudes** (89,28 -> -89,28) e **384 longitudes**, na convencao
 do modelo: **longitudes decrescentes** (`[..., ::-1]`).
 
+## Historico do modelo — GFCT<...>F.dir.TQ0126L042 + .fct.TQ0126L042
+
+Lido por `bamci.bamhist` (substitui o PostGrib). Um `.fct` por tempo de
+previsao (o modelo escreve um arquivo por segmento de 3 h).
+
+`.dir` (texto): linha 1 `CPTEC SIGMA VERS 2.0`; linha 2
+`0001 SEQU T0126 <mwv> <nz> <nz> <hh> <dd> <mm> <aaaa> <hh> <mm> <dd> <aaaa> TAPE`
+(`mwv = Mend+1`; a data corrente vem em **dd/mm** e a inicial em **mm/dd** —
+quirk do legado, o `.fct` e a referencia); linha 3 `CPTEC AGCM REVIS ...`;
+depois `kmax` espessuras `DeltaSigma` (**camada 1 = fundo**, soma 1); depois a
+tabela `NOME (40 col) TIPO(FIXD|PROG|DIAG|SEQU) npts nlev codigo`.
+
+`.fct`: Fortran **UNFORMATTED sequencial**, big endian, marcadores de 4 bytes:
+
+| registro | conteudo |
+|---|---|
+| 1 | 40 B = 10 int32: `ifday`, `nsec`, `idate(4)`, `idatec(4)`, com `idate/idatec = (hh, mm, dd, aaaa)` |
+| 2 .. N | na ordem da tabela do `.dir` e, dentro de cada variavel, em `k=1..nlev`: `npts` float32 |
+
+- `npts = (M+1)(M+2)` -> coeficientes espectrais na **mesma ordem do IC**
+  (m externo, n interno, par cos/sen) — verificado: a topografia espectral do
+  `.fct` e **bit-identica** a do IC de controle;
+- `npts = nlon*nlat` -> grade (`192x384` em TQ0126), **i mais rapido**, linha 1
+  = **polo norte** (verificado contra T2m/q2m e contra a sintese);
+- `nsec` e' escrito como **inteiro** (segundos), mas o `ReadHeader` do PostGrib
+  o le como REAL4 (`pos/source/FileAccess.f90:456`) — o leitor usa o int32;
+- nao ha indice nem cabecalho por variavel: o deslocamento sai da tabela.
+
+Exemplo real (TQ0126L042): 67 variaveis, 396 registros, 77.412.488 B; horas de
+previsao do cabecalho (3 h, 6 h, ...), camada 1 = fundo (T ~ 288 K).
+
 ## SST semanal — SSTWeekly<AAAAMMDD>.G00192
 
 Fortran **UNFORMATTED DIRECT**, recl = 192*384*4, sem marcadores, 2 registros

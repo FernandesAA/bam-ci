@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0
+
+- **`bamci.bamhist`** (novo): leitor nativo do historico do BAM (`.dir` + `.fct`, Fortran SEQUENCIAL big-endian), com `parse_dir`, `read_fct`, `fields()` (`ps/t/q/u/v/topo/div/vort`), `fct_to_grads`/`write_grads` e `read_fct_series`. Validado: topografia bit-identica ao IC, PS corr **0.9995**, Tvir corr **0.9978**.
+- **`mb09 build --source {ctl,bamfct}`**: le os `.fct` direto do BAM, sem PostGrib; `mb09 apply --q-positivity N` aplica o recorte aos 2N membros e registra `q_positivity`/`q_min` no `members.json` (o controle nao passa).
+- **`derivatives.wind_from_div_vort`** movido para `derivatives.py` e sintese vetorizada: **14 s -> 3.6 s por arquivo**.
+- **docs**: `formatos.md` ganhou `.dir`/`.fct`, `mb09.md` documenta `--source bamfct`, `spec_output.md` corrige a ordem (m externo) e `artefatos_ensaio_20261119.md` inventaria a rodada.
+- **Testes**: **387 passed, 1 skipped**.
 ## 1.2.4
 
 - **Extrapolacao acima do topo + clip fisico**: em L64 o topo fica em ~0.015 hPa, 5-6 camadas acima dos 1 hPa da ERA5; agora T e isosterica no topo e q decai a 0, com clip de T em [150,350] K e q >= 0. O `bamci check` passou a validar Tvir/q na grade e sai com 1 se estiverem fora da faixa. Corrige tvir de **-19 K para 231-311 K**.

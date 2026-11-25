@@ -29,15 +29,20 @@ build_eofs(diffs, preset="etsa", weights=None, *, n=None, keep_basis=False,
     (1o autovetor) por membro/campo/regiao + autovalores + sigma_i, prontos
     para 'apply_modes'.
 apply_modes(control, eofs, preset="etsa", sigma=None, *, n=None,
-            q_profile=None) -> list[State]
+            q_profile=None, q_positivity=3) -> list[State]
     2n estados na ordem 2k-1 = x_c + p_k (indice 2k-2) e 2k = x_c - p_k
     (indice 2k-1), k = 1..n. n (impar) usa os n primeiros modos; None usa todos.
-    q_profile None usa o gravado em eofs["meta"].
-write_ensemble(control_path, states, out_dir, prefix) -> list[Path]
-    Grava o controle + os 2n estados (2n+1 arquivos) e 'members.json' (com n e
-    n_members).
+    q_profile None usa o gravado em eofs["meta"]. q_positivity fica no meta de
+    cada State e e' aplicado ao gravar.
+write_ensemble(control_path, states, out_dir, prefix, *, q_positivity=None)
+    -> list[Path]
+    Grava o controle + os 2n estados (2n+1 arquivos) e 'members.json'. Aplica o
+    recorte iterativo de q (default: meta do State, senao 3; 0 desliga) antes de
+    gravar cada membro; o members.json registra q_positivity e o q_min de cada
+    membro.
 run_mb09(control_ic, member_ics, out_dir, preset, seed, *, n=7,
-         remove_mean=True, q_profile="artigo_l28") -> list[Path]
+         remove_mean=True, q_profile="artigo_l28", q_positivity=3)
+    -> list[Path]
     Build + apply em um comando, quando as series de previsao ja existem.
 
 Convencoes e decisoes de implementacao (o artigo NAO especifica; ver D1..D10 em
@@ -96,10 +101,10 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Uni
 import numpy as np
 
 from . import mb09_tables as mb
-from .derivatives import A_EARTH, dpln_columns, spectral_div_vort
+from .derivatives import spectral_div_vort, wind_from_div_vort
 from .ic_format import ICHeader, n_coeffs, read_ic, write_ic
 from .levels import gaussian_latitudes, grid_shape, read_delta_sigma
-from .spectral import analysis, file_order, from_file_order, legendre_columns, synthesis
+from .spectral import analysis, file_order, from_file_order, synthesis
 
 __all__ = [
     "State",
@@ -108,6 +113,7 @@ __all__ = [
     "perturbed_state",
     "build_eofs",
     "build_eofs_from_files",
+    "build_eofs_from_fct",
     "select_window",
     "select_times",
     "apply_modes",
@@ -137,74 +143,9 @@ def _mend_from_ncoeff(n):
     return m
 
 
-def _trig(m, lam, nlon):
-    """(cos, sen, fator) da ordem zonal m, na convencao de spectral.synthesis."""
-    if m == 0:
-        return np.ones(nlon), np.zeros(nlon), 1.0
-    return np.cos(m * lam), np.sin(m * lam), 2.0
-
-
-def _synth_weighted(coef, mend, nlat, nlon, weight=None):
-    """Sintese de um campo escalar a partir de coeficientes (m+1, n+1)."""
-    lat = gaussian_latitudes(nlat)
-    mu = np.sin(np.radians(lat))
-    lam = 2.0 * np.pi * np.arange(nlon) / nlon
-    out = np.zeros((nlat, nlon))
-    for m, pln_m in legendre_columns(mend, mu):
-        c = coef[m, m:].copy()
-        if weight is not None:
-            c = c * weight[m, m:]
-        y = pln_m.T @ c
-        trig, sint, fac = _trig(m, lam, nlon)
-        out += fac * (np.real(y)[:, None] * trig[None, :] + np.imag(y)[:, None] * sint[None, :])
-    return out
-
-
-def _synth_dmu(coef, mend, nlat, nlon):
-    """Sintese de d(.)/d mu (derivada em latitude)."""
-    lat = gaussian_latitudes(nlat)
-    mu = np.sin(np.radians(lat))
-    lam = 2.0 * np.pi * np.arange(nlon) / nlon
-    out = np.zeros((nlat, nlon))
-    for m, dpln_m in dpln_columns(mend, mu):
-        c = coef[m, m:]
-        y = dpln_m.T @ c
-        trig, sint, fac = _trig(m, lam, nlon)
-        out += fac * (np.real(y)[:, None] * trig[None, :] + np.imag(y)[:, None] * sint[None, :])
-    return out
-
-
 def _wind_from_divvort(div_sh, vort_sh, mend, nlat, nlon):
-    """u, v em grade a partir dos coeficientes espectrais de div/vort.
-
-    Resolve o Laplaciano (psi = -a^2 zeta / n(n+1), chi = -a^2 delta / n(n+1)) e
-    usa u = -(1/a) dpsi/dphi + (1/(a cos fi)) dchi/dlam,
-        v =  (1/(a cos fi)) dpsi/dlam + (1/a) dchi/dphi.
-    O modo (0,0) nao tem vento associado e fica zerado.
-    """
-    div_sh = np.asarray(div_sh, dtype=np.complex128)
-    vort_sh = np.asarray(vort_sh, dtype=np.complex128)
-    n = np.arange(mend + 1, dtype=np.float64)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        fac = np.where(n > 0, -A_EARTH ** 2 / (n * (n + 1.0)), 0.0)
-    psi = vort_sh * fac[None, :]
-    chi = div_sh * fac[None, :]
-
-    lat = np.radians(gaussian_latitudes(nlat))
-    coslat = np.cos(lat)[:, None]
-    lam = 2.0 * np.pi * np.arange(nlon) / nlon
-    wlam = np.zeros((mend + 1, mend + 1), dtype=np.complex128)
-    for m in range(mend + 1):
-        wlam[m, :] = 1j * m
-
-    dpsi_dlam = _synth_weighted(psi, mend, nlat, nlon, wlam)
-    dchi_dlam = _synth_weighted(chi, mend, nlat, nlon, wlam)
-    dpsi_dmu = _synth_dmu(psi, mend, nlat, nlon)
-    dchi_dmu = _synth_dmu(chi, mend, nlat, nlon)
-
-    u = -(coslat / A_EARTH) * dpsi_dmu + dchi_dlam / (A_EARTH * coslat)
-    v = dpsi_dlam / (A_EARTH * coslat) + (coslat / A_EARTH) * dchi_dmu
-    return u, v
+    """u, v em grade a partir de div/vort espectrais (ver derivatives)."""
+    return wind_from_div_vort(div_sh, vort_sh, mend, nlat, nlon)
 
 
 def _divvort_sh_from_wind(u, v, nlat, nlon, mend):
@@ -387,11 +328,16 @@ class State:
             _div_sh=div_sh, _vort_sh=vort_sh, _u_ref=u.copy(), _v_ref=v.copy(),
         )
 
-    def to_ic_file(self, out_path: Union[str, Path], template=None) -> Path:
+    def to_ic_file(self, out_path: Union[str, Path], template=None, *,
+                   q_positivity: int = 0,
+                   q_coefficients: Optional[np.ndarray] = None) -> Path:
         """Grava o estado como IC espectral do BAM.
 
         'template' pode ser um caminho de IC (copia o cabecalho/datas) ou um
         ICHeader. Sem template usa 'self.header' ou um cabecalho sigma uniforme.
+        'q_positivity' (0 = desligado) aplica o recorte iterativo de q na GRADE
+        sintetizada antes de gravar; 'q_coefficients' (ncoeff, kmax) permite
+        passar coeficientes ja calculados (usado pelo write_ensemble).
         """
         if self._mend is None:
             raise ValueError("State sem truncacao espectral (_mend): use State.from_ic_file")
@@ -402,10 +348,24 @@ class State:
         header = _header_from_template(template, self)
 
         tvir = np.empty((ncoeff, kmax))
-        sphu = np.empty((ncoeff, kmax))
         for k in range(kmax):
             tvir[:, k] = file_order(analysis(self.t[k], mend))
-            sphu[:, k] = file_order(analysis(self.q[k], mend))
+        if q_coefficients is not None:
+            sphu = np.asarray(q_coefficients, dtype=np.float64)
+            if sphu.shape != (ncoeff, kmax):
+                raise ValueError(
+                    "q_coefficients tem forma %s; esperado (%d, %d)"
+                    % (sphu.shape, ncoeff, kmax))
+        elif _check_q_positivity(q_positivity) > 0:
+            from .pipeline import q_positive_coefficients
+
+            coef_q, _ = q_positive_coefficients(
+                self.q, mend, nlat, nlon, max_iter=int(q_positivity))
+            sphu = np.asarray(coef_q, dtype=np.float64).T
+        else:
+            sphu = np.empty((ncoeff, kmax))
+            for k in range(kmax):
+                sphu[:, k] = file_order(analysis(self.q[k], mend))
 
         lnps = file_order(analysis(self.lnps, mend))
         topo = (file_order(analysis(self.topo, mend)) if self.topo is not None
@@ -470,6 +430,19 @@ def _check_n(n) -> int:
             "n deve ser impar (pares +/- exigem 2n estados simetricos); recebido %r"
             % (n,))
     return value
+
+
+def _check_q_positivity(value) -> int:
+    """Valida q_positivity (iteracoes de recorte; 0 desliga)."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("q_positivity deve ser inteiro >= 0 (recebido %r)"
+                         % (value,)) from None
+    if n != value or n < 0:
+        raise ValueError("q_positivity deve ser inteiro >= 0 (recebido %r)"
+                         % (value,))
+    return n
 
 
 def _validate_q_profile(profile) -> str:
@@ -1030,7 +1003,8 @@ def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEF
                 sigma=None, *, n: Optional[int] = None,
                 q_profile: Optional[str] = None,
                 source_delta_sigma=None,
-                delta_sigma=None) -> List[State]:
+                delta_sigma=None,
+                q_positivity: int = 3) -> List[State]:
     """Gera os 2n estados x_c +/- p_k, na ordem +p_1, -p_1, ..., +p_n, -p_n.
 
     'preset' serve para validar que o eofs foi construido com o mesmo preset;
@@ -1041,7 +1015,10 @@ def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEF
     operacional_l42); None usa o perfil gravado em eofs["meta"].
     'source_delta_sigma' None usa o gravado em eofs["meta"]; 'delta_sigma' None
     usa as espessuras sigma reais do header do IC (ou uniforme, sem header).
+    'q_positivity' fica gravado em cada State (meta) e e' aplicado na hora de
+    gravar (write_ensemble/to_ic_file), nao no grid em memoria.
     """
+    q_positivity = _check_q_positivity(q_positivity)
     eof_preset = eofs.get("preset", preset)
     if preset is None or str(preset) == eof_preset:
         preset = eof_preset
@@ -1099,8 +1076,12 @@ def apply_modes(control: State, eofs: Mapping[str, object], preset: str = mb.DEF
                 elif field == "wind":
                     delta["u"] += scaled.real
                     delta["v"] += scaled.imag
-        out.append(perturbed_state(control, delta))
-        out.append(perturbed_state(control, {k: -v for k, v in delta.items()}))
+        plus = perturbed_state(control, delta)
+        minus = perturbed_state(control, {k: -v for k, v in delta.items()})
+        for state in (plus, minus):
+            state.meta["q_positivity"] = q_positivity
+        out.append(plus)
+        out.append(minus)
     return out
 
 
@@ -1111,18 +1092,24 @@ def write_ensemble(control_path: Union[str, Path], states: Sequence[State],
                    out_dir: Union[str, Path], prefix: str = "mb09", *,
                    suffix: str = "", q_profile: Optional[str] = None,
                    remove_mean: Optional[bool] = None,
-                   source_delta_sigma: Optional[str] = None) -> List[Path]:
+                   source_delta_sigma: Optional[str] = None,
+                   q_positivity: Optional[int] = None) -> List[Path]:
     """Grava controle + 2n estados (2n+1 arquivos) e members.json.
 
     Nomes: '<prefix>_000.unf<suffix>' (controle, copia do arquivo original),
     '<prefix>_001.unf<suffix>' (+p_1), '_002' (-p_1), ... cada State e' gravado
     com o cabecalho do IC de controle. 'states' precisa ter 2n estados (n >= 1);
-    o members.json registra n, n_members e (quando informados) q_profile,
-    remove_mean e source_delta_sigma.
+    o members.json registra n, n_members, q_positivity e o q_min final de cada
+    membro (alem de q_profile/remove_mean/source_delta_sigma quando informados).
+    'q_positivity' (default: meta do State, senao 3) aplica o recorte iterativo
+    de q na GRADE sintetizada antes de gravar; 0 desliga.
     Retorna [controle, +p_1, -p_1, ..., +p_n, -p_n].
     """
     if q_profile is not None:
         q_profile = _validate_q_profile(q_profile)
+    if q_positivity is None:
+        q_positivity = getattr(states[0], "meta", {}).get("q_positivity", 3)
+    q_positivity = _check_q_positivity(q_positivity)
     if source_delta_sigma is not None:
         _, source_delta_sigma = _delta_sigma_input(
             source_delta_sigma, "source_delta_sigma")
@@ -1140,20 +1127,37 @@ def write_ensemble(control_path: Union[str, Path], states: Sequence[State],
         shutil.copyfile(control_path, control_out)
     paths.append(control_out)
 
+    member_q = []
     for idx, state in enumerate(states, start=1):
         target = out_dir / ("%s_%03d.unf%s" % (prefix, idx, suffix))
-        state.to_ic_file(target, template=control_path)
+        coef_q = None
+        q_min = None
+        if q_positivity > 0:
+            from .pipeline import q_positive_coefficients
+
+            if state._mend is None:
+                raise ValueError(
+                    "State sem _mend para positividade de q: use State.from_ic_file")
+            coef_q, qinfo = q_positive_coefficients(
+                state.q, int(state._mend), state.nlat, state.nlon,
+                max_iter=q_positivity)
+            q_min = qinfo["min"]
+        state.to_ic_file(target, template=control_path,
+                         q_coefficients=None if coef_q is None else coef_q.T)
+        member_q.append(q_min)
         paths.append(target)
 
     members = []
     for idx in range(1, len(states) + 1):
         k = (idx + 1) // 2
         sign = "+" if idx % 2 == 1 else "-"
-        members.append({"index": idx, "k": k, "sign": sign, "path": str(paths[idx])})
+        members.append({"index": idx, "k": k, "sign": sign, "path": str(paths[idx]),
+                        "q_positivity": q_positivity, "q_min": member_q[idx - 1]})
     manifest = {
         "control": str(paths[0]),
         "n": n_modes,
         "n_members": len(paths),
+        "q_positivity": q_positivity,
         "order": "000=controle; 2k-1=+p_k; 2k=-p_k",
         "files": [str(p) for p in paths],
         "members": members,
@@ -1197,7 +1201,7 @@ def run_mb09(control_ic: Union[str, Path], member_ics, out_dir: Union[str, Path]
              n: int = mb.N_PERTURBATIONS, prefix: str = "mb09", suffix: str = "",
              sigma=None, remove_mean: bool = True,
              q_profile: str = DEFAULT_Q_PROFILE,
-             source_delta_sigma=None) -> List[Path]:
+             source_delta_sigma=None, q_positivity: int = 3) -> List[Path]:
     """Build + apply a partir das series ja integradas.
 
     'control_ic' e' o IC da analise de controle (estado base a perturbar).
@@ -1206,8 +1210,8 @@ def run_mb09(control_ic: Union[str, Path], member_ics, out_dir: Union[str, Path]
     em formato IC (State.from_ic_file). 'n' (impar, default 7) e' o numero de
     perturbacoes: se houver mais series, usa as n primeiras; se houver menos,
     erro. 'seed' e' apenas proveniencia aqui: a integracao de 36 h e' externa.
-    'remove_mean', 'q_profile' e 'source_delta_sigma' seguem para build/apply
-    e para o members.json.
+    'remove_mean', 'q_profile', 'source_delta_sigma' e 'q_positivity' seguem
+    para build/apply e para o members.json (q_positivity aplicado ao gravar q).
 
     Retorna os 2n+1 caminhos gravados por 'write_ensemble'.
     """
@@ -1238,10 +1242,12 @@ def run_mb09(control_ic: Union[str, Path], member_ics, out_dir: Union[str, Path]
                        q_profile=q_profile, source_delta_sigma=source_delta_sigma)
     eofs["meta"]["seed"] = int(seed)
     states = apply_modes(control, eofs, preset, sigma, n=n, q_profile=q_profile,
-                         source_delta_sigma=source_delta_sigma)
+                         source_delta_sigma=source_delta_sigma,
+                         q_positivity=q_positivity)
     return write_ensemble(control_ic, states, out_dir, prefix, suffix=suffix,
                           q_profile=q_profile, remove_mean=remove_mean,
-                          source_delta_sigma=source_delta_sigma)
+                          source_delta_sigma=source_delta_sigma,
+                          q_positivity=q_positivity)
 
 
 # ---------------------------------------------------------------------------
@@ -1590,6 +1596,172 @@ def build_eofs_from_files(control_ctl: Union[str, Path],
 
 
 # ---------------------------------------------------------------------------
+# series de historico do BAM lidas do .fct (sem PostGrib)
+# ---------------------------------------------------------------------------
+def fct_paths(value) -> List[Path]:
+    """Resolve diretorio/glob/arquivo em lista de .fct ordenada pela hora."""
+    from .bamhist import fct_files
+    return fct_files(value)
+
+
+class _FctSeries:
+    """Serie de M tempos lida dos .fct do BAM (um arquivo por tempo).
+
+    O PostGrib junta os tempos num .unf com tdef; aqui cada .fct traz UM tempo
+    e a hora de previsao sai do proprio cabecalho (valid_time - analysis_time),
+    nao de uma referencia externa. 'analysis_time' (opcional) so' sobrescreve a
+    referencia usada para reportar horas.
+
+    A fisica e' a mesma de State.from_ic_file: o arquivo nao tem vento, u/v saem
+    da inversao de div/vort (derivatives.wind_from_div_vort).
+    """
+
+    def __init__(self, paths, *, clip_q: bool = True, analysis_time=None):
+        from . import bamhist
+
+        files = [bamhist.read_fct(p) for p in paths]
+        if not files:
+            raise ValueError("serie .fct vazia")
+        files.sort(key=lambda f: f.lead_hours)
+        first = files[0]
+        self.fcts = files
+        self.mend = int(first.mend)
+        self.nlat = int(first.nlat)
+        self.nlon = int(first.nlon)
+        self.lat = gaussian_latitudes(self.nlat)
+        self.lon = np.arange(self.nlon, dtype=np.float64) * 360.0 / self.nlon
+        self.hours = np.asarray([f.lead_hours for f in files], dtype=np.float64)
+        parsed = _parse_analysis_time(analysis_time)
+        self.analysis_time = parsed if parsed is not None else first.header.analysis_time
+        self.nt = len(files)
+        self.clip_q = bool(clip_q)
+        self.paths = [f.path for f in files]
+        self._cache: Dict[int, State] = {}
+
+    def __len__(self) -> int:
+        return self.nt
+
+    def state(self, t: int = 1) -> State:
+        """Estado no tempo t (1-based, ordem cronologica)."""
+        if not (1 <= int(t) <= self.nt):
+            raise IndexError("t=%d fora de 1..%d" % (int(t), self.nt))
+        t = int(t)
+        if t not in self._cache:
+            data = self.fcts[t - 1].fields(clip_q=self.clip_q)
+            self._cache[t] = State(
+                t=data["t"], q=data["q"], u=data["u"], v=data["v"], ps=data["ps"],
+                lat=self.lat.copy(), lon=self.lon.copy(), topo=data["topo"],
+                meta=dict(source="bamfct", fct=str(self.paths[t - 1]),
+                          lead_hours=float(self.hours[t - 1])),
+            )
+        return self._cache[t]
+
+
+def _fct_control_paths(control) -> List[Path]:
+    """Aceita lista de caminhos, diretorio, glob ou arquivo .fct."""
+    if isinstance(control, (list, tuple)):
+        return [Path(p) for p in control]
+    return fct_paths(control)
+
+
+def build_eofs_from_fct(control, member_dirs, preset: str = mb.DEFAULT_PRESET, *,
+                        window=None, hours=None, analysis_time=None,
+                        n: Optional[int] = None, remove_mean: bool = True,
+                        q_profile: str = DEFAULT_Q_PROFILE,
+                        source_delta_sigma=None, clip_q: bool = True,
+                        weights=None, keep_basis: bool = False) -> dict:
+    """Como build_eofs_from_files, mas lendo os .fct do BAM (sem PostGrib).
+
+    control:       diretorio/glob/arquivo .fct (todos os tempos da rodada de
+                   controle) ou lista de caminhos.
+    member_dirs:   um item por membro, cada um diretorio/glob/arquivo .fct.
+    window/hours:  mesma semantica do build a partir de .ctl (default 6:36:3).
+                   Tempos do controle fora da janela sao ignorados; cada membro
+                   so' precisa ter os tempos selecionados (o controle pode ter
+                   mais tempos que os membros).
+    analysis_time: opcional; o default e' o 00Z do cabecalho do .fct.
+
+    Devolve o mesmo dict de build_eofs, com meta["source"] = "bamfct", os
+    caminhos usados e as horas selecionadas.
+    """
+    _validate_q_profile(q_profile)
+    src_values, src_path = _delta_sigma_input(source_delta_sigma, "source_delta_sigma")
+    member_dirs = list(member_dirs)
+    available = len(member_dirs)
+    if n is None:
+        n_used = _check_n(available)
+    else:
+        n_used = _check_n(n)
+        if available < n_used:
+            raise ValueError("pediram n=%d mas foram passados %d membros"
+                             % (n_used, available))
+        member_dirs = member_dirs[:n_used]
+    if not member_dirs:
+        raise ValueError("nenhum membro")
+
+    control_series = _FctSeries(_fct_control_paths(control), clip_q=clip_q,
+                                analysis_time=analysis_time)
+    if control_series.nt < 2:
+        raise ValueError("controle tem %d tempo(s); o MB09 precisa de M >= 2"
+                         % (control_series.nt,))
+    if hours is not None:
+        idx = select_times(control_series.hours, hours)
+    elif window is not None:
+        if len(tuple(window)) != 3:
+            raise ValueError("window deve ser (inicio, fim, passo)")
+        idx = select_window(control_series.hours, *window)
+    else:
+        idx = select_window(control_series.hours)
+    selected = control_series.hours[idx]
+    n_ignored = int(control_series.nt - idx.size)
+    if idx.size < 2:
+        raise ValueError(
+            "a janela selecionou %d tempo(s); o MB09 precisa de M >= 2 "
+            "(horas disponiveis: %s)" % (idx.size, _format_hours(control_series.hours)))
+    ctrl = [control_series.state(int(t) + 1) for t in idx]
+
+    def gen():
+        for member in member_dirs:
+            series = _FctSeries(fct_paths(member), clip_q=clip_q,
+                                analysis_time=control_series.analysis_time)
+            missing = [float(h) for h in selected
+                       if not np.any(np.isclose(series.hours, h, atol=1e-6, rtol=0.0))]
+            if missing:
+                raise ValueError(
+                    "%s: faltam os tempos %s h; tempos disponiveis (h): %s"
+                    % (member, _format_hours(missing), _format_hours(series.hours)))
+            if series.nlat != control_series.nlat or series.nlon != control_series.nlon:
+                raise ValueError("%s: grade %dx%d diferente do controle (%dx%d)"
+                                 % (member, series.nlat, series.nlon,
+                                    control_series.nlat, control_series.nlon))
+            lookup = {round(float(h), 6): i + 1 for i, h in enumerate(series.hours)}
+            diff = [_diff_state(series.state(lookup[round(float(h), 6)]), ctrl[j])
+                    for j, h in enumerate(selected)]
+            yield _member_arrays(diff)
+
+    eofs = _assemble_eofs(gen(), preset, control_series.lat, control_series.lon,
+                          weights, keep_basis, source=str(control),
+                          remove_mean=remove_mean)
+    eofs["meta"].update({
+        "source": "bamfct",
+        "control": str(control),
+        "members": [str(m) for m in member_dirs],
+        "hours": [float(h) for h in selected],
+        "analysis_time": control_series.analysis_time.strftime("%Y%m%d%H"),
+        "n_ignored_times": n_ignored,
+        "n_requested": None if n is None else n_used,
+        "n_available": available,
+        "n_used": n_used,
+        "remove_mean": bool(remove_mean),
+        "q_profile": _validate_q_profile(q_profile),
+        "source_delta_sigma": src_path,
+        "source_delta_sigma_values": (None if src_values is None
+                                      else [float(v) for v in src_values]),
+    })
+    return eofs
+
+
+# ---------------------------------------------------------------------------
 # persistencia dos EOFs (.npz)
 # ---------------------------------------------------------------------------
 def save_eofs(path: Union[str, Path], eofs: Mapping[str, object]) -> Path:
@@ -1790,23 +1962,66 @@ def _discover_build_inputs(args):
     return control, list(members)
 
 
+def _discover_fct_inputs(args):
+    """--source bamfct: controle/membros a partir de diretorios de .fct.
+
+    Com --work e sem --control, procura <work>/ens*/ e usa {ctrl,control}/out
+    como controle e as demais pastas <tag>/out (ordenadas) como membros -
+    o layout de work/ens126 do BAM 1.2.
+    """
+    work = Path(args.work) if args.work else None
+    control = args.control
+    members = list(args.members or [])
+    if control is None and work is not None:
+        roots = [p for p in sorted(work.glob("ens*")) if p.is_dir()] or [work]
+        root = roots[0]
+        for name in ("ctrl", "control"):
+            candidate = root / name / "out"
+            if candidate.is_dir():
+                control = str(candidate)
+                break
+        if not members:
+            members = [str(p / "out") for p in sorted(root.iterdir())
+                       if p.is_dir() and p.name not in ("ctrl", "control")
+                       and (p / "out").is_dir()
+                       and any((p / "out").glob("*.fct*"))]
+    if control is None:
+        raise SystemExit("build --source bamfct: informe --control <dir/glob .fct> "
+                         "ou --work <work do BAM>")
+    if not members:
+        raise SystemExit("build --source bamfct: informe --members <dir1> ... <dirN>")
+    return control, members
+
+
 def _cmd_build(args) -> int:
     n = _check_n(args.n_modes)
     remove_mean = args.remove_mean == "yes"
     q_profile = _validate_q_profile(args.q_profile)
-    control, members = _discover_build_inputs(args)
-    if len(members) > n:
-        print("aviso: %d membro(s) fornecidos; usando os %d primeiros (n=%d)"
-              % (len(members), n, n))
     hours = _parse_hours(args.times)
     window = None if hours is not None else _parse_window(args.window)
-    eofs = build_eofs_from_files(
-        control, members, preset=args.preset,
-        variables=_parse_vars(args.vars), ps_units=args.ps_units,
-        hours=hours, window=window, analysis_time=args.analysis_time, n=n,
-        remove_mean=remove_mean, q_profile=q_profile,
-        source_delta_sigma=args.source_delta_sigma,
-    )
+    if getattr(args, "source", "ctl") == "bamfct":
+        control, members = _discover_fct_inputs(args)
+        if len(members) > n:
+            print("aviso: %d membro(s) fornecidos; usando os %d primeiros (n=%d)"
+                  % (len(members), n, n))
+        eofs = build_eofs_from_fct(
+            control, members, preset=args.preset,
+            hours=hours, window=window, analysis_time=args.analysis_time, n=n,
+            remove_mean=remove_mean, q_profile=q_profile,
+            source_delta_sigma=args.source_delta_sigma,
+        )
+    else:
+        control, members = _discover_build_inputs(args)
+        if len(members) > n:
+            print("aviso: %d membro(s) fornecidos; usando os %d primeiros (n=%d)"
+                  % (len(members), n, n))
+        eofs = build_eofs_from_files(
+            control, members, preset=args.preset,
+            variables=_parse_vars(args.vars), ps_units=args.ps_units,
+            hours=hours, window=window, analysis_time=args.analysis_time, n=n,
+            remove_mean=remove_mean, q_profile=q_profile,
+            source_delta_sigma=args.source_delta_sigma,
+        )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     save_eofs(out, eofs)
@@ -1833,6 +2048,7 @@ def _cmd_apply(args) -> int:
         print("aviso: eof.npz tem %d modo(s); usando os %d primeiros (n=%d)"
               % (eofs["n"], n, n))
     q_profile = _validate_q_profile(args.q_profile or meta.get("q_profile"))
+    q_positivity = _check_q_positivity(args.q_positivity)
     source_delta_sigma = args.source_delta_sigma
     if source_delta_sigma is None:
         source_delta_sigma = meta.get("source_delta_sigma")
@@ -1841,12 +2057,14 @@ def _cmd_apply(args) -> int:
     states = apply_modes(control, eofs, preset, _parse_sigma(args.sigma), n=n,
                          q_profile=q_profile,
                          source_delta_sigma=args.source_delta_sigma,
-                         delta_sigma=args.delta_sigma)
+                         delta_sigma=args.delta_sigma,
+                         q_positivity=q_positivity)
     suffix = (".%s" % args.resolution) if args.resolution else ""
     paths = write_ensemble(args.ic, states, args.out_dir, args.prefix, suffix=suffix,
                            q_profile=q_profile,
                            remove_mean=meta.get("remove_mean"),
-                           source_delta_sigma=source_delta_sigma)
+                           source_delta_sigma=source_delta_sigma,
+                           q_positivity=q_positivity)
     for path in paths:
         print(path)
     return 0
@@ -1878,9 +2096,16 @@ def build_parser():
     p.set_defaults(func=_cmd_random)
 
     p = sub.add_parser("build", help="calcula EOFs das series controle + membros")
-    p.add_argument("--work", default=None, help="usa <work>/mb09/forecast/*.ctl")
-    p.add_argument("--control", default=None, help=".ctl do controle (PostGrib)")
-    p.add_argument("--members", nargs="+", default=None, help=".ctl dos n membros")
+    p.add_argument("--source", default="ctl", choices=("ctl", "bamfct"),
+                   help="origem das series: .ctl/.unf do PostGrib (ctl) ou os "
+                        ".fct do BAM (bamfct; sem PostGrib)")
+    p.add_argument("--work", default=None,
+                   help="ctl: usa <work>/mb09/forecast/*.ctl; bamfct: usa "
+                        "<work>/ens*/{ctrl,m*}/out/*.fct")
+    p.add_argument("--control", default=None,
+                   help=".ctl do controle (PostGrib) ou dir/glob de .fct (bamfct)")
+    p.add_argument("--members", nargs="+", default=None,
+                   help=".ctl dos n membros (ctl) ou dirs/globs de .fct (bamfct)")
     p.add_argument("--preset", default=mb.DEFAULT_PRESET)
     p.add_argument("--n-modes", "--n", dest="n_modes", type=int,
                    default=mb.N_PERTURBATIONS,
@@ -1919,6 +2144,8 @@ def build_parser():
                    help="sobrescreve o DeltaSigma.L028 gravado no eofs")
     p.add_argument("--delta-sigma", default=None,
                    help="DeltaSigma do modelo (default: header sigma do IC)")
+    p.add_argument("--q-positivity", type=int, default=3,
+                   help="iteracoes de positividade de q ao gravar (default 3; 0 desliga)")
     p.add_argument("--sigma", default=None, help="ex. T=1.5,wind=5.0,p=1.0")
     p.set_defaults(func=_cmd_apply)
     return parser

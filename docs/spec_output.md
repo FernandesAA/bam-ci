@@ -259,44 +259,52 @@ np.frombuffer(..., dtype=">f4") reproduzindo os mesmos arrays.
   vetoriais (Mnwv1/Mnwv3, ICnAGCM/InputParameters.f90:310-312) e **nao** vao para
   o arquivo.
 
-### 2.2 Ordenacao (m,n): a numeracao la0
+### 2.2 Ordenacao (m,n): m externo, n interno (numeracao la0)
 
 A ordem do arquivo e a numeracao **la0** de ICnAGCM/Legendre.f90:49-65, usada em
-ICnAGCM/Decomposition.f90:144-181 para converter para a numeracao la1 (por grau)
-usada pela base de Legendre. Em termos de (m,n):
+ICnAGCM/Decomposition.f90:144-181 para converter para a numeracao la1 (por
+**grau**, a da base de Legendre). Em termos de (m,n), o bloco de cada ordem zonal
+m e' **contiguo**:
 
 - o indice de par p (1-based) e
-  **p(m,n) = d*(M+1) - d*(d-1)/2 + m + 1**, com **d = n - m**;
-- dentro de uma diagonal d, m cresce;
-- a diagonal d tem M+1-d elementos;
+  **p(m,n) = m*(M+1) - m*(m-1)/2 + (n-m) + 1**;
+- para cada m, n cresce de m ate M (M+1-m pares); depois passa para m+1;
 - real em **2p-1**, imaginario em **2p** (Fortran); em Python (0-based):
   i_real = 2*(p-1), i_imag = 2*(p-1)+1.
 
-Para M=62 (ilustrativo, mostra que a diagonal e o criterio, nao o grau):
+Para M=62:
 
-| (m,n) | d | p |
-|---|---|---|
-| (0,0) | 0 | 1 |
-| (1,1) | 0 | 2 |
-| (62,62) | 0 | 63 |
-| (0,1) | 1 | 64 |
-| (1,2) | 1 | 65 |
-| (0,62) | 62 | 2016 |
+| (m,n) | p |
+|---|---|
+| (0,0) | 1 |
+| (0,1) | 2 |
+| (0,62) | 63 |
+| (1,1) | 64 |
+| (1,2) | 65 |
+| (62,62) | 2016 |
 
-Ou seja: **os primeiros 63 pares sao os setoriais (m=n=0..62)**; o segundo
-coeficiente do modo zonal (m=0, n=1) esta na posicao **64**, nao na 2. Qualquer
-port que assuma "m=0 contiguo no inicio" produz arquivo invalido.
+Ou seja: **os primeiros 63 pares sao o modo zonal (m=0, n=0..62)**; o par (1,1)
+so' aparece na posicao **64**. A conferencia definitiva e' o seno de m=0: os 127
+primeiros pares do arquivo (m=0, n=0..126 em TQ0126) tem parte imaginaria
+exatamente 0.0 (verificado no `.fct` e no IC de producao).
 
-Equivalente vetorizado:
+Equivalente vetorizado (e' o que `bamci.ic_format.pair_index` implementa):
 
 ```python
 p = np.empty((M + 1, M + 1), dtype=int)   # indice de par (1-based)
-for mm in range(M + 1):                     # ordem = m
-    for nn in range(mm, M + 1):             # grau n >= m
-        d = nn - mm
-        p[mm, nn] = d * (M + 1) - d * (d - 1) // 2 + mm + 1
+for m in range(M + 1):                      # ordem zonal
+    base = m * (M + 1) - m * (m - 1) // 2
+    for n in range(m, M + 1):               # grau n >= m
+        p[m, n] = base + (n - m) + 1
 # par p -> reais[2*(p-1)] (cosseno), reais[2*(p-1)+1] (seno)
 ```
+
+> Correcao (2026-11-24): a primeira versao deste documento descrevia a ordem
+> como "diagonal-major" (d = n-m externo), o que esta **errado**. A ordem real e'
+> m externo, como acima; foi confirmada nos dois sentidos: pelos 127 senos nulos
+> de m=0 no inicio do registro de topografia do `.fct` e pela igualdade
+> bit-a-bit entre a topografia do `.fct` e a do IC de controle
+> (GANLNMC2026111900S.unf.TQ0126L042), que o modelo le.
 
 ### 2.3 Normalizacao e fator Cte
 
